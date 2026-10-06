@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabular-fm-temporal-shifts"
+version = "1.0.0"
+description = "Adaptation and forgetting of a frozen tabular foundation model (TabPFN) under temporal shifts: a study of context memory"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "torch>=2.1",
+    "tabpfn>=6.4,<7",
+    "scikit-learn>=1.3",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "river>=0.23",
+    "matplotlib>=3.7",
+    "openml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["."]
+markers = [
+    "slow: runs real TabPFN (a few seconds)",
+    "network: downloads data from OpenML on first run",
+]
