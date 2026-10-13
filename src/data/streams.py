@@ -38,7 +38,7 @@ GAS_CLASS_NAMES = ["ethanol", "ethylene", "ammonia", "acetaldehyde", "acetone", 
 # Electricity（OpenML 151，NSW 电力市场，每天 48 个半小时）
 ELEC_OPENML_ID = 151
 ELEC_FINGERPRINT = "dc4c9a3bf1697d2d6576482ce5eac04106bdd49831fc09dc82a7fc4ab6804cd0"
-ELEC_DUP_DAY = 363                # 第 363 天（行 17,424–17,471）是第 362 天（1997-05-04）的复制
+ELEC_DUP_DAY = 363                # 第 363 天（行 17,424–17,471）重复第 362 天（1997-05-04）：date 编码与 nswdemand 相同，1 个 nswprice 值和 2 个标签不同
 ELEC_START = _dt.date(1996, 5, 7)
 ELEC_FEATURES = ["day", "period", "nswprice", "nswdemand"]   # 去掉 date（按时间查表会泄露答案）与前 39% 是占位值的维州三列
 ELEC_MIN_SEASON_DAYS = 30         # 不足 30 天的首尾季节并入相邻季节

@@ -5,7 +5,7 @@
 
 统一接口：
     update(idx)                  新揭示的流内下标（升序）
-    close_regime(rows)           一个阶段结束（只有档案类方法用到）
+    close_regime(rows)           一个阶段结束（档案类方法与阶段均衡双记忆 *_rb 用到，其余方法忽略）
     contexts(X_query)            -> [(查询位置数组, 上下文下标数组, 路由编号)]
     stored_rows() / max_context() 预算统计
     digest()                     记忆状态的哈希（回测前后必须不变）

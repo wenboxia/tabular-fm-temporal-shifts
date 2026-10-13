@@ -60,13 +60,16 @@ def prepare(seed: int, dataset: str = "insects"):
     sd = X[:NORM_ROWS].std(0)
     sd[sd < 1e-6] = 1.0
     norm = lambda a: ((a - mu) / sd).astype(np.float32)   # noqa: E731
+    bad = np.diff(np.r_[0, (~s.holdout_ok).astype(np.int8), 0])          # 不可抽留出的区间（渐变过渡区）
+    zone = np.array([remap_points(np.flatnonzero(bad == 1), stream_idx),
+                     remap_points(np.flatnonzero(bad == -1), stream_idx)], dtype=np.int64).T.reshape(-1, 2)
     return dict(
         X=norm(X), y=s.y[stream_idx], regime=s.regime[stream_idx],
         X_hold=norm(s.X[hold_idx].astype(np.float64)), y_hold=s.y[hold_idx],
         regime_hold=s.regime[hold_idx], stream_idx=stream_idx, hold_idx=hold_idx,
         boundaries=remap_points(s.boundaries, stream_idx),
         mem_boundaries=remap_points(s.mem_boundaries, stream_idx), n_classes=len(s.class_ids),
-        class_ids=s.class_ids, change_points=s.boundaries, dataset=dataset,
+        class_ids=s.class_ids, change_points=s.boundaries, dataset=dataset, zone=zone,
     )
 
 
@@ -125,7 +128,7 @@ def main():
     name = stem(args.dataset, args.method, args.n_estimators, args.stride, args.seed, args.tag)
     path = atomic_savez(
         os.path.join(args.out_dir, name + ".npz"),
-        dataset=np.array([args.dataset]), mem_boundaries=np.asarray(d["mem_boundaries"]),
+        dataset=np.array([args.dataset]), mem_boundaries=np.asarray(d["mem_boundaries"]), zone=d["zone"],
         class_ids=np.array([str(c) for c in d["class_ids"]]),
         method=np.array([args.method]), seed=np.array([args.seed]),
         n_estimators=np.array([args.n_estimators]), stride=np.array([args.stride]),

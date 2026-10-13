@@ -72,9 +72,14 @@ class TestMemoryBoundaries:
         regime = (np.arange(n) >= 800).astype(np.int64)
         X_hold = np.zeros((6, 2), np.float32); regime_hold = np.array([0, 0, 0, 1, 1, 1])
         m = _Recorder(100, 0.75, y)
+        m.seg_at_800 = None
         dummy = lambda Xc, yc, Xq: np.full((len(Xq), 3), 1 / 3)   # noqa: E731
+
+        def snap(end, n_, res):                    # 评估边界处的阶段标签快照（跑完时这些行早已被淘汰）
+            if end == 800:
+                m.seg_at_800 = dict(m._seg)
         r = run_stream(m, dummy, X, y, regime, X_hold, regime_hold, [800], stride=50, start=100,
-                       ckpt_every=500, mem_boundaries=mem)
+                       ckpt_every=500, mem_boundaries=mem, progress=snap)
         return m, r
 
     def test_default_closes_at_eval_boundary(self):
@@ -82,10 +87,26 @@ class TestMemoryBoundaries:
         assert m.closed_at == [800] and r.closures.tolist() == [800]
 
     def test_memory_can_close_earlier_than_eval_boundary(self):
-        m, r = self._run([650])
-        assert m.closed_at == [650]
+        m, r = self._run([675])                      # 675 不在批次网格上（100 起每 50 行）：批次必须在记忆边界处切开
+        assert m.closed_at == [675]
         assert 800 in r.ckpt_t.tolist()              # 评估阶段结束时仍然回测
         assert all(int(u) == 0 for t, u in zip(r.ckpt_t, r.ckpt_upto) if t <= 800)
+        seg = m.seg_at_800
+        assert any(675 <= i < 800 for i in seg) and any(i < 675 for i in seg)
+        assert all(g == (1 if i >= 675 else 0) for i, g in seg.items())   # 675 之后揭示的行记为新阶段
+
+    def test_adwin_ignores_memory_boundaries(self):
+        class Silent:
+            def update(self, err):
+                return False
+        n = 1200
+        y = np.arange(n) % 3
+        m = _Recorder(100, 0.75, y)
+        dummy = lambda Xc, yc, Xq: np.full((len(Xq), 3), 1 / 3)   # noqa: E731
+        run_stream(m, dummy, np.zeros((n, 2), np.float32), y, (np.arange(n) >= 800).astype(np.int64),
+                   np.zeros((6, 2), np.float32), np.array([0, 0, 0, 1, 1, 1]), [800], stride=50, start=100,
+                   ckpt_every=500, segmentation="adwin", detector=Silent(), mem_boundaries=[675])
+        assert m.closed_at == []
 
 
 def test_200_row_methods():
@@ -105,10 +126,11 @@ def test_elec_regimes_merge_short_edges():
 def _load(name):
     try:
         return load_stream(name)
-    except Exception as e:  # noqa: BLE001  没有缓存且不能联网时跳过
+    except (ImportError, OSError) as e:   # 只有"没有缓存又不能联网 / 没装 openml"才跳过；指纹不符等错误必须失败
         pytest.skip(f"{name} 不可用：{type(e).__name__}")
 
 
+@pytest.mark.network      # 第一次运行要下载数据（之后用缓存）；-m "not network" 可跳过
 class TestRealStreams:
     def test_gas_chronological_batches(self):
         s = _load("gas")
@@ -150,3 +172,12 @@ def test_openml_local_cache_checks_fingerprint(tmp_path, monkeypatch):
     assert np.array_equal(A, X) and ys.tolist() == y.tolist() and names == ["f0", "f1", "f2"]
     with pytest.raises(RuntimeError, match="预注册"):
         st._openml(7, "0" * 64)
+
+
+@pytest.mark.network
+def test_prepare_records_transition_zone():
+    from scripts.run_round2 import prepare
+    _load("insects_gradual")
+    d = prepare(0, "insects_gradual")
+    assert d["zone"].tolist() == [[9750, 12750]] and d["boundaries"] == [12750]   # 过渡区，流内坐标
+    assert not ((d["hold_idx"] >= 55_158 - 45_158) & (d["hold_idx"] < 58_158 - 45_158)).any()

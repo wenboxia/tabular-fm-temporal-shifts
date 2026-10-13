@@ -1,10 +1,12 @@
-"""Round 2 运行器：批量 prequential + 留出集回测（协议见 results/phase56_prereg.md）。
+"""Round 2/3 运行器：批量 prequential + 留出集回测（协议见 results/phase56_prereg.md）。
 
 一次运行 = 一种记忆方法 × 一个 seed。流程：
-  1. 从流内第 `start` 行起，每 `stride` 行一批（批不跨阶段边界）：
+  1. 从流内第 `start` 行起，每 `stride` 行一批（批不跨 boundaries ∪ mem_boundaries 中的任何边界）：
      用"此前已揭示的行"构造上下文 → 预测这一批 → 揭示标签、更新记忆。
-  2. 阶段在官方变点（或 ADWIN 报警）处关闭，档案类方法此时存档。
-  3. 每 `ckpt_every` 行和每个官方阶段结束时，用**当前**记忆预测所有已出现阶段的留出集。
+  2. official 模式下记忆在 mem_boundaries（默认等于 boundaries）处 close_regime；adwin 模式只在报警处关闭
+     （mem_boundaries 不起作用）；档案类方法与阶段均衡双记忆（*_rb）此时划分阶段。
+  3. 每 `ckpt_every` 行和每个评估阶段结束（boundaries）时，用**当前**记忆预测所有已出现评估阶段的留出集；
+     检查点与 ckpt_upto 始终按评估边界计算。
      回测不改变记忆（前后 digest 必须相同）。
 
 不变量（违反即抛错，不会产出看似正常的结果）：

@@ -153,7 +153,8 @@ SMOKE=1 bash scripts/reproduce_round2.sh   # ~3-minute CPU check of the main pip
 SMOKE=1 bash scripts/reproduce_round1.sh   # ~7-minute CPU check of the preliminary study
 SMOKE=1 bash scripts/reproduce_round3.sh   # ~3-minute CPU check of the round-3 pipeline (Electricity)
 pytest tests/                              # unit tests; Insects tests are skipped until the data is cached,
-                                           # the two OpenML tests need network on first run (-m "not network" skips them)
+                                           # tests that download data (OpenML 151/1476, Insects gradual) need network
+                                           # on first run (-m "not network" skips them)
 bash scripts/reproduce_round2.sh           # main experiment: 16 methods x 10 seeds, transfer matrix, figures
 bash scripts/reproduce_round1.sh           # preliminary study, followed by its summary
 ```
