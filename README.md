@@ -1,4 +1,4 @@
-# Adaptation and Forgetting of Tabular Foundation Models under Temporal Shifts
+# Balancing Adaptation and Forgetting in Tabular Foundation Models under Concept Drift
 
 *A study of context memory for a frozen TabPFN on concept-drift data streams*
 
@@ -33,7 +33,7 @@ A frozen tabular foundation model such as TabPFN never updates its weights. It "
 
 ## The study in two steps
 
-File names use the project's internal numbering: *round 1* = Step 1, *round 2* (`phase56_*`) = Step 2.
+File names use the project's internal numbering: *round 1* = Step 1, *round 2* (`phase56_*`) = Step 2, *round 3* = Step 2 on further datasets.
 
 ### Step 1 · Preliminary study: a three-level system with a drift detector (negative result)
 
@@ -93,7 +93,7 @@ The room for recovery after these drifts was small, so the question changed from
 
 **Limitations.**
 
-- One dataset and one stream order. The 10 seeds vary only the held-out sample and TabPFN's randomness, so the small p-values do not speak to other streams.
+- One dataset and one stream order (round 3 below adds three streams). The 10 seeds vary only the held-out sample and TabPFN's randomness, so the small p-values do not speak to other streams.
 - The method was chosen after the pilot (see above).
 - The dual memories use 1 000 context rows; the default baseline uses 200. The 1 000-row sliding window is the equal-budget reference.
 - There is no non-TabPFN stream learner (e.g. ARF, SRP) as a baseline, and the 75 / 25 short/long split was not varied.
@@ -109,6 +109,16 @@ The full report covers all 16 methods, every table, the mechanism, the costs, th
 | `scripts/analyze_round2.py` | tables and the pre-registered hypothesis tests |
 | `scripts/plot_round2.py` | the figures and the per-seed CSV |
 | `scripts/reproduce_round2.sh` | everything above, in order |
+
+**Round 3: further datasets (pre-registered; runs in progress).** [Amendment 3](results/phase56_prereg.md) of the pre-registration, fixed before any full run, extends the comparison to three streams with different drift:
+
+| Stream | Rows | Features | Classes | Regimes |
+|---|---|---|---|---|
+| Gas Sensor Array Drift (OpenML 1476), sensor drift | 13 910 | 128 | 6 | 8 (10 batches over 36 months, in time order) |
+| Electricity (OpenML 151), one duplicated day removed | 45 264 | 4 | 2 | 10 (seasons) |
+| Insects `gradual_imbalanced`, the slice around its gradual change point | 23 000 | 33 | 6 | 2, with a 3 000-row mixing zone |
+
+The sliding window, the KDD dual memory and the regime-balanced dual memory are compared at 200 and at 1 000 context rows, over 10 seeds. On the gradual stream the memory closes the old regime at the documented change point, at the start of the mixing zone, or where ADWIN alarms. The two 200-row dual memories are also added on the Insects abrupt stream. Loaders: `src/data/streams.py`; runs: `scripts/reproduce_round3.sh`. Results will be added here.
 
 ## Related work
 
@@ -134,13 +144,14 @@ pip install -e ".[dev]" -c requirements-lock.txt   # exact versions used for all
 ```
 
 - **TabPFN weights.** tabpfn 6.4.1 downloads its v2.5 weights from the Hugging Face repository `Prior-Labs/tabpfn_2_5`, which is gated. Accept its terms on Hugging Face and log in (`hf auth login`, or set `HF_TOKEN`) before the first run.
-- **Data.** The Insects stream is downloaded on first use, checked against a fixed SHA-256 hash and cached in `~/.cache/insects_drift/`. The Electricity data (early stages only) comes from OpenML and is cached in `~/.openml/`.
+- **Data.** The Insects streams are downloaded on first use, checked against fixed SHA-256 hashes and cached in `~/.cache/insects_drift/`. Gas and Electricity come from OpenML, are checked against the content fingerprints in Amendment 3 and cached in `~/.cache/openml_streams/`.
 - **Telemetry.** tabpfn sends anonymous usage telemetry by default; set `TABPFN_DISABLE_TELEMETRY=1` to turn it off.
 - The scripts call `python3`; set `PYTHON=...` to use another interpreter, e.g. inside a virtual environment.
 
 ```bash
 SMOKE=1 bash scripts/reproduce_round2.sh   # ~3-minute CPU check of the main pipeline (also downloads the data)
 SMOKE=1 bash scripts/reproduce_round1.sh   # ~7-minute CPU check of the preliminary study
+SMOKE=1 bash scripts/reproduce_round3.sh   # ~3-minute CPU check of the round-3 pipeline (Electricity)
 pytest tests/                              # unit tests; Insects tests are skipped until the data is cached,
                                            # the two OpenML tests need network on first run (-m "not network" skips them)
 bash scripts/reproduce_round2.sh           # main experiment: 16 methods x 10 seeds, transfer matrix, figures
@@ -155,7 +166,7 @@ bash scripts/reproduce_round1.sh           # preliminary study, followed by its 
 | `src/memory/context_memory.py` | all context policies of Step 2, including the regime-balanced dual memory |
 | `src/eval/` | stream runner (leak and budget checks) and the Step 2 metrics |
 | `src/models/`, `src/regime/`, `src/consolidation/`, `src/drift/` | three-level system and drift detector of Step 1 |
-| `src/data/` | Insects and Electricity loaders, synthetic drift generators, window loaders |
+| `src/data/` | stream loaders (`streams.py`: Insects, Gas, Electricity), synthetic drift generators, window loaders |
 | `scripts/` | experiment entry points (see the tables above) |
 | `tests/` | unit tests |
 | `results/` | main-experiment report, pre-registration, figures, per-seed results |
@@ -179,7 +190,7 @@ Code released under the [MIT License](LICENSE). The Insects data and the TabPFN 
 
 ## 中文版
 
-### 表格基础模型在时间漂移下的适应与遗忘
+### 表格基础模型在概念漂移下适应与遗忘的平衡
 
 *冻结的 TabPFN 在概念漂移数据流上的上下文记忆研究* · KTH 皇家理工学院硕士论文项目 · Wenbo Xia
 
@@ -204,7 +215,7 @@ Code released under the [MIT License](LICENSE). The Insects data and the TabPFN 
 
 #### 研究分两步
 
-文件名沿用项目内部编号：*round 1* = 第一步，*round 2*（`phase56_*`）= 第二步。
+文件名沿用项目内部编号：*round 1* = 第一步，*round 2*（`phase56_*`）= 第二步，*round 3* = 第二步扩展到更多数据集。
 
 ##### 第一步 · 前期探索：带漂移检测器的三层系统（负面结果）
 
@@ -231,13 +242,15 @@ Code released under the [MIT License](LICENSE). The Insects data and the TabPFN 
 
 **局限**：
 
-- 只有一个数据集、一种阶段顺序；10 个 seed 只改变留出集抽样和 TabPFN 的随机性。
+- 只有一个数据集、一种阶段顺序（下面的第三轮补了三个数据流）；10 个 seed 只改变留出集抽样和 TabPFN 的随机性。
 - 方法是在 pilot 之后选定的。
 - 双记忆用 1000 行上下文，默认基线只用 200 行，1000 行滑动窗口是同等预算的参照。
 - 没有非 TabPFN 的流学习器（如 ARF、SRP）作对照，短期/长期比例 75/25 也没有扫描。
 - ADWIN 版本仍用官方变点来对齐批次和定义留出集。
 
 完整报告见 **[results/phase56_round2.md](results/phase56_round2.md)**（中文，图为英文），逐 seed 数字见 [results/round2_per_seed.csv](results/round2_per_seed.csv)。
+
+**第三轮：更多数据集（已预注册，正在运行）。** 预注册的[修订 3](results/phase56_prereg.md) 在任何完整运行之前定稿，把比较扩展到三个漂移特点不同的数据流：Gas Sensor Array Drift（OpenML 1476，传感器漂移，8 个阶段）、Electricity（OpenML 151，按季节分 10 个阶段）和 Insects `gradual_imbalanced` 中渐变漂移的那一段（含 3000 行的混合区）。滑动窗口、KDD 双记忆和本文方法各在 200 行和 1000 行两种上下文规模下比较，10 个 seed；渐变数据流上，记忆在官方变点、混合区起点或 ADWIN 报警处结束旧阶段。结果完成后补在这里。
 
 **相关工作**：KDD 2026 的双记忆（本文的主要基线）和 CURE（Lee 等，2026；面向多种表格基础模型，按熵筛选写入、按冗余淘汰）都只用数据流上的准确率评估；Lourenço 等（2025）主张用上下文表格模型连接流学习与持续学习。本文在适应之外，直接测量了对早先阶段留出数据的保留。
 

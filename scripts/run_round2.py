@@ -1,9 +1,11 @@
-"""Round 2：一种记忆方法 × 一个 seed，在完整 Insects 流上跑批量 prequential + 留出集回测。
+"""一种记忆方法 × 一个 seed × 一个数据流：批量 prequential + 留出集回测（第二、三轮共用）。
 
-    python scripts/run_round2.py --method arch_routed --seed 0 --n_estimators 1 --device cpu
+    python scripts/run_round2.py --method dual1000_rb --seed 0 --n_estimators 1 --device cpu
+    python scripts/run_round2.py --dataset gas --method dual200 --seed 0
 
-设计与成功标准见 results/phase56_prereg.md（先提交、后跑）。
-输出：<out_dir>/r2_<method>_n<E>_S<S>_seed<seed><tag>.npz（原子写入）。
+设计与成功标准见 results/phase56_prereg.md（先提交、后跑；第三轮见修订 3）。
+输出：<out_dir>/r2_[<dataset>_]<method>_n<E>_S<S>_seed<seed><tag>.npz（原子写入；
+Insects 突变流不加数据集前缀，与第二轮的文件名一致）。
 """
 import argparse
 import os
@@ -15,17 +17,16 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data.real_world import load_insects_stream
+from src.data.streams import DATASETS, carve_stream_holdouts, load_stream
 from src.drift.error_detector import make_detector
 from src.eval.stream_runner import needs_detector, run_stream
 from src.memory.context_memory import METHODS, make_memory
 from src.models.slow_prior import SlowPrior
 from src.utils.atomic_io import atomic_savez
 from src.utils.device import describe, resolve_device
-from src.utils.forgetting import carve_regime_holdouts, remap_points
+from src.utils.forgetting import remap_points
 from src.utils.seeding import set_global_seed
 
-HOLDOUT_PER_CLASS = {0: 50, 1: 50, 2: 50, 3: 50, 4: 20, 5: 50}
 START, NORM_ROWS = 200, 200
 
 
@@ -45,10 +46,15 @@ def commit_id() -> str:
         return "unknown"
 
 
-def prepare(seed: int):
+def stem(dataset: str, method: str, n_estimators: int, stride: int, seed: int, tag: str = "") -> str:
+    prefix = "" if dataset == "insects" else f"{dataset}_"
+    return f"r2_{prefix}{method}_n{n_estimators}_S{stride}_seed{seed}{tag}"
+
+
+def prepare(seed: int, dataset: str = "insects"):
     """加载流、按 seed 切留出集、归一化。返回所有方法共用的数据。"""
-    s = load_insects_stream()
-    stream_idx, hold_idx = carve_regime_holdouts(s.y, s.regime, HOLDOUT_PER_CLASS, seed)
+    s = load_stream(dataset)
+    stream_idx, hold_idx = carve_stream_holdouts(s, seed)
     X = s.X[stream_idx].astype(np.float64)
     mu = X[:NORM_ROWS].mean(0)
     sd = X[:NORM_ROWS].std(0)
@@ -58,14 +64,16 @@ def prepare(seed: int):
         X=norm(X), y=s.y[stream_idx], regime=s.regime[stream_idx],
         X_hold=norm(s.X[hold_idx].astype(np.float64)), y_hold=s.y[hold_idx],
         regime_hold=s.regime[hold_idx], stream_idx=stream_idx, hold_idx=hold_idx,
-        boundaries=remap_points(s.change_points, stream_idx), n_classes=len(s.class_ids),
-        class_ids=s.class_ids, change_points=s.change_points,
+        boundaries=remap_points(s.boundaries, stream_idx),
+        mem_boundaries=remap_points(s.mem_boundaries, stream_idx), n_classes=len(s.class_ids),
+        class_ids=s.class_ids, change_points=s.boundaries, dataset=dataset,
     )
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--method", required=True, choices=sorted(METHODS))
+    ap.add_argument("--dataset", default="insects", choices=DATASETS)
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--n_estimators", type=int, default=4)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
@@ -79,16 +87,16 @@ def main():
     set_global_seed(args.seed)
     device = resolve_device(args.device)
     print(f"[device] {describe(device)}", flush=True)
-    d = prepare(args.seed)
+    d = prepare(args.seed, args.dataset)
     memory = make_memory(args.method, d["X"], d["y"], d["n_classes"], args.seed)
     prior = SlowPrior(device=device, n_estimators=args.n_estimators, random_state=args.seed)
     predict_fn = lambda Xc, yc, Xq: prior.predict_proba_global(Xc, yc, Xq, d["n_classes"])  # noqa: E731
     adwin = needs_detector(args.method)
     detector = make_detector("river", delta=0.002, cooldown=300, clock=1) if adwin else None
 
-    print(f"[run] method={args.method} seed={args.seed} n_estimators={args.n_estimators} "
+    print(f"[run] dataset={args.dataset} method={args.method} seed={args.seed} n_estimators={args.n_estimators} "
           f"stride={args.stride} stream={len(d['y'])} holdout={len(d['y_hold'])} "
-          f"boundaries={d['boundaries']}", flush=True)
+          f"boundaries={d['boundaries']} mem_boundaries={d['mem_boundaries']}", flush=True)
     t0 = time.time()
     last = [0]
 
@@ -103,6 +111,7 @@ def main():
     r = run_stream(memory, predict_fn, d["X"], d["y"], d["regime"], d["X_hold"], d["regime_hold"],
                    d["boundaries"], stride=args.stride, start=START, ckpt_every=args.ckpt_every,
                    segmentation="adwin" if adwin else "official", detector=detector,
+                   mem_boundaries=d["mem_boundaries"],
                    max_rows=args.max_stream_rows, progress=progress)
     elapsed = time.time() - t0
 
@@ -113,9 +122,11 @@ def main():
           flush=True)
 
     os.makedirs(args.out_dir, exist_ok=True)
-    stem = f"r2_{args.method}_n{args.n_estimators}_S{args.stride}_seed{args.seed}{args.tag}"
+    name = stem(args.dataset, args.method, args.n_estimators, args.stride, args.seed, args.tag)
     path = atomic_savez(
-        os.path.join(args.out_dir, stem + ".npz"),
+        os.path.join(args.out_dir, name + ".npz"),
+        dataset=np.array([args.dataset]), mem_boundaries=np.asarray(d["mem_boundaries"]),
+        class_ids=np.array([str(c) for c in d["class_ids"]]),
         method=np.array([args.method]), seed=np.array([args.seed]),
         n_estimators=np.array([args.n_estimators]), stride=np.array([args.stride]),
         ckpt_every=np.array([args.ckpt_every]), start=np.array([START]),

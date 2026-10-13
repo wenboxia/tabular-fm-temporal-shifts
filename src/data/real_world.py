@@ -49,6 +49,11 @@ _INSECTS_GDRIVE = {
         "https://drive.google.com/uc?export=download&"
         "id=1WQoIuuVgiuXfzv4kvao6XuLQG37V923O&confirm=t"
     ),
+    # 第三轮：渐变案例（river 记录 143,323 行、38,339,554 字节）
+    "gradual_imbalanced": (
+        "https://drive.google.com/uc?export=download&"
+        "id=1_WJ7lxK2sx1i6kq9Nqv4KrjT0ZXB0QbC&confirm=t"
+    ),
 }
 
 # 首次下载后通过 sha256(open(path,'rb').read()).hexdigest() 计算并写死，
@@ -56,6 +61,8 @@ _INSECTS_GDRIVE = {
 _INSECTS_SHA256 = {
     # as of 2026-04-29，首次下载实测；如 Google Drive 静默替换会抛错
     "abrupt_balanced": "f368a6f4b7f28ce2e9aa0a9e542e1f6924999cae3e8607f0637549798cb7b94a",
+    # 与 USP 仓库副本逐字节相同（2026-10-13 核对）
+    "gradual_imbalanced": "e380c13dbd927b2687e27031cc657b04fb1428a6d1ba77a2e1d84b75ace8c8dc",
 }
 
 _INSECTS_CACHE_DIR = os.path.expanduser("~/.cache/insects_drift")

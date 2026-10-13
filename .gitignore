@@ -11,6 +11,7 @@ venv/
 *.partial.md
 *.pdf
 results/round2/
+results/round3/
 results/*.json
 results/multiseed_*
 results/baseline_*

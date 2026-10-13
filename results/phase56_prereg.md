@@ -115,3 +115,37 @@ The public repository's history was restarted on 2026-10-06 so that it contains 
 | + Amendment 2 | `3c7c19f` | 2026-10-03 10:10 CEST, before the main runs | `165a8e198f7b721fef647fae055cf60f3df3f402` |
 
 The text above this note is unchanged since Amendment 2. Amendment 2 was written after the go/no-go pilot that Amendment 1 requires had finished (`dual1000_rb`, seed 0, n_estimators = 1: retention +12.6 pp and adaptation +0.93 pp against `sw200`, so "go") and before any main-run result; "no new results seen" in its heading refers to the main runs. Two names in it refer to the author's setup: "the ROG" is the GPU laptop used for all main runs (NVIDIA RTX 2060, 6 GB), and `calib5`, `core`, `main_a`, `main_b` and `sens` are the names of its run batches (`calib5` = the GPU reproduction gate against the Mac pilot).
+
+## Amendment 3 (2026-10-13, round 3: more datasets; written before any full round-3 run)
+
+**Why.** Round 2 used a single stream. Round 3 asks whether its result holds on further datasets with different drift characteristics, compares the sliding window, the KDD dual memory and our method at the same context size (200 and 1,000 rows), and analyses the reliability of the results and when regime balancing helps. Implementation: `src/data/streams.py`. Before this amendment was fixed, only truncated pipeline checks had been run on the new streams (CPU, one ensemble member, seed 0, at most the first 11,000 rows); they served to test the code and were not used to choose any setting.
+
+**Dataset selection.** Candidates were the real streams of the USP DS repository (Souza et al. 2020) plus INSECTS variants. A dataset qualified if (1) regimes can be defined from documented or natural time boundaries, (2) every regime contains enough rows of most classes for a stratified holdout, (3) later regimes differ from earlier ones, (4) the stream is at most about 100k rows of numeric features within TabPFN's limits (at most 10 classes), and (5) it has no unfixable artefacts (leaking columns, label-sorted order, long single-class runs). Three streams qualify and are all used; none will be dropped after seeing results.
+
+**Datasets.**
+
+| Name | Source | Drift | Regimes |
+|---|---|---|---|
+| `insects` | INSECTS abrupt_balanced (round 2, unchanged) | abrupt, temperature | 5 official change points |
+| `gas` | Gas Sensor Array Drift, UCI 224 = OpenML 1476 (content SHA-256 `2025486c…a66a5`) | incremental sensor ageing over 36 months, not recurring | 10 monthly batches; batches with fewer than 300 rows merged with the next (B4+B5, B8+B9) → 8 regimes |
+| `electricity` | NSW electricity market, OpenML 151 (content SHA-256 `dc4c9a3b…04cd0`) | seasonal, partly recurring | southern-hemisphere meteorological seasons; partial seasons shorter than 30 days merged with the neighbour → 10 regimes |
+| `insects_gradual` | INSECTS incremental-gradual, imbalanced (file SHA-256 `e380c13d…c8dc`), slice | gradual: 35 °C and 23 °C instances interleaved | 2 regimes |
+
+Preprocessing:
+- **Gas.** The source file lists batch 10 first; batches are put back in chronological order (sizes 445/1244/1586/161/197/2300/3613/294/470/3600 from the UCI documentation, checked against its per-batch class counts). Inside each batch the source order is label-structured and undocumented, so rows are shuffled once with a fixed seed (0); every run uses the same stream. 128 features, 6 classes. Some classes are missing in some batches (toluene in batches 3–5).
+- **Electricity.** Day 363 (rows 17,424–17,471) is a duplicate of day 362 (4 May 1997) and is removed; the weekday column after it is shifted by one and is corrected. Features: `day`, `period`, `nswprice`, `nswdemand`. `date` is dropped (with batch-wise label reveal it acts as a time index into autocorrelated labels) and `vicprice`, `vicdemand`, `transfer` are dropped (constant placeholders for the first 17,424 rows). 943 days × 48 half-hours = 45,264 rows, 2 classes.
+- **INSECTS gradual.** Table 2 gives one change point, 58,159; for the imbalanced INSECTS files the change points are 1-based (checked on all five points of abrupt_imbalanced), so the first row of the pure 23 °C concept is 58,158 (0-based). Matching every row to the temperature-ordered pool (incremental_imbalanced) shows that the interleaved transition is the 3,000 rows before it, [55,158, 58,158) (first 23 °C row 55,160, last 35 °C row 58,157), with about 30 %, 50 % and 70 % cold rows in its three thirds. Slice: [45,158, 68,158) = 10,000 pure 35 °C rows, the transition, and 10,000 pure 23 °C rows (margins = 10 × the largest memory). Evaluation regimes: R0 = [45,158, 58,158), R1 = [58,158, 68,158).
+
+**Holdouts (new datasets).** Per (regime, class): min(50, ⌊eligible rows / 4⌋) rows, drawn uniformly at random from the whole regime; a class with fewer than 10 such rows gets no holdout in that regime, and that regime's retention is the balanced accuracy over its remaining classes. In the gradual slice the transition rows are not eligible. Resulting sizes (every seed): gas 1,635 rows, electricity 1,000, gradual slice 550 (R0 without class 5, which has only 10 pure-35 °C rows). `insects` keeps the round-2 holdouts.
+
+**Memory boundary in the gradual slice.** Where the old regime ends is ambiguous under gradual drift, so three arms are run and all are reported: (a) `insects_gradual`: the memory closes R0 at 58,158, the documented change point (same rule as for `insects`); (b) `insects_gradual_start`: at 55,158, the start of the transition (known from the analysis above, so an upper reference rather than a deployable rule); (c) ADWIN on the method's own errors (`*_rb_adwin`, settings as in Amendment 2). Evaluation regimes and holdouts are the same in all arms.
+
+**Protocol.** Unchanged: batches of S = 50, first prediction at row 200, checkpoints every 500 rows and at evaluation-regime ends, z-scores from the first 200 stream rows, frozen TabPFN 6.4.1 (v2.5 weights), `n_estimators` = 4, seeds 0–9.
+
+**Methods.** On `gas`, `electricity` and `insects_gradual`: `sw200`, `sw1000`, `dual200` (150 + 50), `dual1000` (750 + 250), `dual200_rb`, `dual1000_rb`; on `insects_gradual` also `dual200_rb_adwin`, `dual1000_rb_adwin`, and on `insects_gradual_start` also `dual200_rb`, `dual1000_rb`. On `insects`: `dual200` and `dual200_rb` are added.
+
+**Analysis.**
+- Reliability: for every dataset and size, mean, SD and 95 % t-interval over seeds of ADAPT, ADAPT (masked), RET, RET per regime and FGT; paired differences of our method against the KDD dual memory and against the sliding window of the same size, with two-sided paired t-tests and the number of seeds with a positive difference. The comparison RET(ours) − RET(KDD dual) is Holm-corrected over the 4 datasets × 2 sizes. ADAPT is reported against a non-inferiority margin of −0.5 pp. No new success thresholds: round 3 characterises when regime balancing helps.
+- Mechanism: a labels-only replay of the long-term memory (share of each regime over time), the overlap between the KDD dual memory and the sliding window of the same size, and the per-regime gain against how much the regimes differ.
+- Gradual slice: the three boundary arms side by side; balanced accuracy on the transition rows (overall and per third) and on the first 500 rows after the transition starts.
+- Other context sizes and short/long ratios are run only if time allows and are reported as exploratory hyperparameter analysis.

@@ -53,10 +53,15 @@ def run_stream(
     segmentation: str = "official",
     detector=None,
     min_segment: int = 500,
+    mem_boundaries: "list[int] | None" = None,
     max_rows: "int | None" = None,
     progress=None,
 ) -> RunResult:
-    """boundaries：官方变点在流内坐标下的位置（新阶段第一行）。"""
+    """boundaries：评估阶段的边界在流内坐标下的位置（新阶段第一行）。
+
+    mem_boundaries：记忆在哪里关闭阶段（segmentation='official' 时用）；默认与 boundaries 相同。
+    第三轮的渐变案例里两者可以不同：评估阶段按渐变结束划分，记忆可以在渐变开始时关闭。
+    """
     n = len(y) if max_rows is None else min(len(y), int(max_rows))
     budget = memory.max_context()
     pred = np.full(len(y), -1, dtype=np.int8)
@@ -65,6 +70,8 @@ def run_stream(
     res = RunResult(pred=pred, route=route, ckpt_t=None, ckpt_upto=None, ckpt_pred=None,
                     closures=None)
     bnds = sorted(int(b) for b in boundaries if 0 < b < n)
+    mbnds = bnds if mem_boundaries is None else sorted(int(b) for b in mem_boundaries if 0 < b < n)
+    cuts = sorted(set(bnds) | set(mbnds))           # 批次不跨越任何一种边界
     if segmentation not in ("official", "adwin"):
         raise ValueError(segmentation)
     if segmentation == "adwin" and detector is None:
@@ -106,7 +113,7 @@ def run_stream(
     next_ckpt = (start // ckpt_every + 1) * ckpt_every
     t = start
     while t < n:
-        nxt = [b for b in bnds if b > t]
+        nxt = [b for b in cuts if b > t]
         end = min(t + stride, n, nxt[0] if nxt else n)
         q = np.arange(t, end)
         p, rts = predict_groups(X[q], t)
@@ -124,7 +131,7 @@ def run_stream(
                     seg_start = row_t + 1
 
         regime_end = end in bnds or end == n
-        if segmentation == "official" and end in bnds:
+        if segmentation == "official" and end in mbnds:
             memory.close_regime(np.arange(seg_start, end))
             closures.append(end)
             seg_start = end

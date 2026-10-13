@@ -293,6 +293,10 @@ METHODS = {
     "arch_routed_adwin": ("archive", "routed"),
     "dual1000_rb": ("dual_rb", 1000),            # 修订 1：我们的方法（阶段均衡双记忆）
     "dual1000_rb_adwin": ("dual_rb", 1000),      # 同上，阶段由 ADWIN 报警划分
+    # 修订 3：200 行规模（短期 150 + 长期 50）
+    "dual200": ("dual", 200),
+    "dual200_rb": ("dual_rb", 200),
+    "dual200_rb_adwin": ("dual_rb", 200),
 }
 
 
