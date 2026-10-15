@@ -110,7 +110,7 @@ The full report covers all 16 methods, every table, the mechanism, the costs, th
 | `scripts/plot_round2.py` | the figures and the per-seed CSV |
 | `scripts/reproduce_round2.sh` | everything above, in order |
 
-**Round 3: further datasets (pre-registered; runs in progress).** [Amendment 3](results/phase56_prereg.md) of the pre-registration, fixed before any full run, extends the comparison to three streams with different drift:
+**Round 3: further datasets (pre-registered; complete).** [Amendment 3](results/phase56_prereg.md) of the pre-registration, fixed before any full run, extends the comparison to three streams with different drift:
 
 | Stream | Rows | Features | Classes | Regimes |
 |---|---|---|---|---|
@@ -118,7 +118,36 @@ The full report covers all 16 methods, every table, the mechanism, the costs, th
 | Electricity (OpenML 151), one duplicated day removed | 45 264 | 4 | 2 | 10 (seasons) |
 | Insects `gradual_imbalanced`, the slice around its gradual change point | 23 000 | 33 | 6 | 2, with a 3 000-row mixing zone |
 
-The sliding window, the KDD dual memory and the regime-balanced dual memory are compared at 200 and at 1 000 context rows, over 10 seeds. On the gradual stream the memory closes the old regime at the documented change point, at the start of the mixing zone, or where ADWIN alarms. The two 200-row dual memories are also added on the Insects abrupt stream. Loaders: `src/data/streams.py`; runs: `scripts/reproduce_round3.sh`. Results will be added here.
+The sliding window, the KDD dual memory and the regime-balanced dual memory are compared at 200 and at 1 000 context rows, over 10 seeds. On the gradual stream the memory closes the old regime at the documented change point, at the start of the mixing zone, or where ADWIN alarms. The two 200-row dual memories are also added on the Insects abrupt stream. Loaders: `src/data/streams.py`; runs: `scripts/reproduce_round3.sh`.
+
+*Retention (%) of the three policies, 10 seeds, balanced accuracy; ours − KDD in pp. On the gradual slice "ours" closes the old regime at the documented change point.*
+
+| Stream | Rows | Sliding window | KDD dual memory | Ours | Ours − KDD |
+|---|---|---|---|---|---|
+| Insects (abrupt) | 200 | 35.08 | 42.72 | 44.17 | +1.45 |
+| | 1 000 | 39.76 | 45.86 | 47.27 | +1.42 |
+| Gas | 200 | 78.67 | 78.85 | 96.85 | +18.00 |
+| | 1 000 | 81.74 | 82.02 | 97.76 | +15.74 |
+| Electricity | 200 | 64.48 | 64.48 | 68.39 | +3.91 |
+| | 1 000 | 65.68 | 65.38 | 68.59 | +3.21 |
+| Insects (gradual) | 200 | 27.52 | 25.74 | 36.89 | +11.15 |
+| | 1 000 | 31.89 | 31.36 | 46.99 | +15.63 |
+
+- All 8 comparisons with the KDD dual memory are positive in 10/10 seeds and significant after Holm correction. Round 3 has no success threshold; it describes where regime balancing helps.
+- On Gas and Electricity the KDD dual memory retains about as much as a sliding window of the same size (its memory overlaps the window by about 95 %), so there "beating KDD" is close to beating a memory that keeps no older regimes.
+- Retention does not turn into stream accuracy. Against the sliding window of the same size, ours adapts worse on Insects and Electricity (−0.15 to −1.85 pp); against KDD it misses the −0.5 pp non-inferiority margin on Electricity (−2.10 / −0.51 pp) and on the gradual slice at 200 rows.
+- Ours uses the official regime boundaries, and retention averages over the same regimes, which favours it. Without known boundaries (ADWIN) it was tested only on the gradual slice, where it still retains more than KDD (34.89 / 43.04).
+- The Insects 1 000-row runs are the round-2 files, not a new replication.
+
+The full report (in Chinese; figures in English) is **[results/phase56_round3.md](results/phase56_round3.md)**; the automatic report of every number is [results/round3_analysis.md](results/round3_analysis.md), and per-seed numbers are in [results/round3_per_seed.csv](results/round3_per_seed.csv).
+
+![Adaptation–retention per stream](results/figures_round3/fig_adapt_ret.png)
+
+| Script | Purpose |
+|---|---|
+| `scripts/reproduce_round3.sh` | all round-3 runs |
+| `scripts/analyze_round3.py` | tables, pre-registered tests and descriptive checks (`--quick` for a first look at seed 0) |
+| `scripts/plot_round3.py` | the round-3 figures |
 
 ## Related work
 
@@ -152,6 +181,8 @@ pip install -e ".[dev]" -c requirements-lock.txt   # exact versions used for all
 SMOKE=1 bash scripts/reproduce_round2.sh   # ~3-minute CPU check of the main pipeline (also downloads the data)
 SMOKE=1 bash scripts/reproduce_round1.sh   # ~7-minute CPU check of the preliminary study
 SMOKE=1 bash scripts/reproduce_round3.sh   # ~3-minute CPU check of the round-3 pipeline (Electricity)
+bash scripts/reproduce_round3.sh           # round 3 (needs round 2's Insects runs for the 1 000-row Insects comparison)
+python3 scripts/analyze_round3.py && python3 scripts/plot_round3.py   # round-3 report, CSV and figures
 pytest tests/                              # unit tests; Insects tests are skipped until the data is cached,
                                            # tests that download data (OpenML 151/1476, Insects gradual) need network
                                            # on first run (-m "not network" skips them)
@@ -251,7 +282,14 @@ Code released under the [MIT License](LICENSE). The Insects data and the TabPFN 
 
 完整报告见 **[results/phase56_round2.md](results/phase56_round2.md)**（中文，图为英文），逐 seed 数字见 [results/round2_per_seed.csv](results/round2_per_seed.csv)。
 
-**第三轮：更多数据集（已预注册，正在运行）。** 预注册的[修订 3](results/phase56_prereg.md) 在任何完整运行之前定稿，把比较扩展到三个漂移特点不同的数据流：Gas Sensor Array Drift（OpenML 1476，传感器漂移，8 个阶段）、Electricity（OpenML 151，按季节分 10 个阶段）和 Insects `gradual_imbalanced` 中渐变漂移的那一段（含 3000 行的混合区）。滑动窗口、KDD 双记忆和本文方法各在 200 行和 1000 行两种上下文规模下比较，10 个 seed；渐变数据流上，记忆在官方变点、混合区起点或 ADWIN 报警处结束旧阶段。结果完成后补在这里。
+**第三轮：更多数据集（已预注册，已完成）。** 预注册的[修订 3](results/phase56_prereg.md) 在任何完整运行之前定稿，把比较扩展到三个漂移特点不同的数据流：Gas Sensor Array Drift（OpenML 1476，传感器漂移，8 个阶段）、Electricity（OpenML 151，按季节分 10 个阶段）和 Insects `gradual_imbalanced` 中渐变漂移的那一段（含 3000 行的混合区）。滑动窗口、KDD 双记忆和本文方法各在 200 行和 1000 行两种上下文规模下比较，10 个 seed；渐变数据流上，记忆在官方变点、混合区起点或 ADWIN 报警处结束旧阶段。
+
+- 保留（RET）上，本文方法相对 KDD 双记忆的 8 项比较（4 条流 × 2 种规模）全部为正，每项 10/10 个 seed，Holm 校正后全部显著：Insects +1.45 / +1.42 pp，Gas +18.00 / +15.74，Electricity +3.91 / +3.21，渐变段 +11.15 / +15.63（200 / 1000 行）。第三轮不设成功门槛，只描述阶段均衡在哪里有帮助。
+- Gas 和 Electricity 上，KDD 双记忆保留的旧阶段与同规模滑窗几乎一样多（记忆约 95 % 重合），所以在这两条流上"胜过 KDD"接近"胜过不保留旧阶段"。
+- 保留的增益没有转化为流上的准确率：相对同规模滑窗，本文方法在 Insects 和 Electricity 上适应更差（−0.15 到 −1.85 pp）；相对 KDD，在 Electricity（−2.10 / −0.51 pp）和渐变段 200 行上没有过 −0.5 pp 的非劣性边界。
+- 本文方法用官方阶段边界，而 RET 正是按这些阶段平均，对它有利；不知道边界（ADWIN）的情况只在渐变段测过，仍比 KDD 保留更多（34.89 / 43.04）。
+
+完整报告见 **[results/phase56_round3.md](results/phase56_round3.md)**，自动报告见 [results/round3_analysis.md](results/round3_analysis.md)，逐 seed 数字见 [results/round3_per_seed.csv](results/round3_per_seed.csv)。
 
 **相关工作**：KDD 2026 的双记忆（本文的主要基线）和 CURE（Lee 等，2026；面向多种表格基础模型，按熵筛选写入、按冗余淘汰）都只用数据流上的准确率评估；Lourenço 等（2025）主张用上下文表格模型连接流学习与持续学习。本文在适应之外，直接测量了对早先阶段留出数据的保留。
 
