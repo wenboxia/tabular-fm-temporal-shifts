@@ -297,6 +297,10 @@ METHODS = {
     "dual200": ("dual", 200),
     "dual200_rb": ("dual_rb", 200),
     "dual200_rb_adwin": ("dual_rb", 200),
+    # 探索性比例分析（预注册修订 3 的补充说明，2026-10-17）：200 行，短期占比 0.65 / 0.85（KDD 论文的网格；
+    # 0.75 就是上面的 dual200 / dual200_rb）。第三个元素是短期占比，缺省为 0.75
+    **{f"dual200_s{int(r * 100)}": ("dual", 200, r) for r in (0.65, 0.85)},
+    **{f"dual200_rb_s{int(r * 100)}": ("dual_rb", 200, r) for r in (0.65, 0.85)},
 }
 
 
@@ -304,13 +308,14 @@ def make_memory(method: str, X: np.ndarray, y: np.ndarray, n_classes: int, seed:
     """按预注册的方法名构造记忆。"""
     if method not in METHODS:
         raise ValueError(f"未知方法 {method!r}；可选 {sorted(METHODS)}")
-    kind, arg = METHODS[method]
+    kind, arg, *rest = METHODS[method]
+    short_ratio = rest[0] if rest else 0.75
     if kind == "sliding":
         return SlidingMemory(arg)
     if kind == "dual":
-        return DualMemory(arg, 0.75, y)
+        return DualMemory(arg, short_ratio, y)
     if kind == "dual_rb":
-        return RegimeBalancedDual(arg, 0.75, y)
+        return RegimeBalancedDual(arg, short_ratio, y)
     if kind == "cbfifo":
         return ClassBalancedFIFO(arg, y, n_classes)
     rng = np.random.default_rng(10_000 + seed)       # 档案抽样只依赖 seed

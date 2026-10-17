@@ -366,6 +366,58 @@ def paired(a, b) -> dict:
     return out
 
 
+def nice_ceil(x: float) -> float:
+    """把 x 向上取整到"好看的数"：x < 10 取整数，10 ≤ x < 50 取 2 的倍数，更大取 5 的倍数。"""
+    assert np.isfinite(x) and x > 0, f"x 必须是正的有限数，收到 {x}"
+    step = 1.0 if x < 10 else (2.0 if x < 50 else 5.0)
+    return float(np.ceil(x / step - 1e-9) * step)
+
+
+def common_span(ranges, pad: float = 0.2) -> float:
+    """多个子图共用一个坐标宽度：取各 (lo, hi) 里最大的 hi − lo，乘 (1 + pad) 后取整到好看的数。
+    nan 的范围被忽略；没有任何有效范围时报错。"""
+    widths = [hi - lo for lo, hi in ranges if np.isfinite(lo) and np.isfinite(hi)]
+    assert widths, "没有有效的数据范围"
+    return nice_ceil(max(max(widths), 1e-6) * (1 + pad))
+
+
+def centered_limits(lo: float, hi: float, width: float, cap: "float | None" = None) -> "tuple[float, float]":
+    """宽度为 width、以 [lo, hi] 的中点为中心的坐标范围。
+    给了 cap（例如准确率的 100.5）且上限超过 cap 时，把整个窗口向下平移，使上限 = max(cap, hi)：
+    宽度不变（"各子图刻度相同"的说法仍然成立），数据仍在窗口内。"""
+    assert hi >= lo and width >= hi - lo, "width 必须不小于数据范围"
+    mid = (lo + hi) / 2
+    a, b = mid - width / 2, mid + width / 2
+    if cap is not None and b > cap:
+        shift = b - max(cap, hi)
+        a, b = a - shift, b - shift
+    return a, b
+
+
+def tick_step(width: float) -> float:
+    """给定坐标宽度的统一刻度间隔：不超过 width / 4 的最大 1、2、5 × 10^k。"""
+    assert width > 0
+    target = width / 4
+    e = 10.0 ** np.floor(np.log10(target))
+    return float(max(m * e for m in (1, 2, 5) if m * e <= target * (1 + 1e-9)))
+
+
+def forest_points(S: dict, seeds, datasets, sizes, metric: str) -> list:
+    """森林图的数据：每个 (数据集, 规模) 两个比较 ours − KDD 与 ours − 同规模滑窗的配对差（单位 pp）及 95% t 区间。
+    渐变数据集用 (a) 臂（即 insects_gradual 里的 dual*_rb）。S 的键是 (dataset, method, seed)，值是 run_metrics 的字典。"""
+    def v(ds, m):
+        return np.array([S.get((ds, m, s), {}).get(metric, np.nan) for s in seeds], float)
+    out = []
+    for ds in datasets:
+        for size in sizes:
+            ours = v(ds, f"dual{size}_rb")
+            for label, base in (("kdd", f"dual{size}"), ("sw", f"sw{size}")):
+                r = paired(ours, v(ds, base))
+                out.append(dict(dataset=ds, size=size, vs=label, n=r["n"], mean=100 * r["mean"],
+                                lo=100 * r["lo"], hi=100 * r["hi"]))
+    return out
+
+
 def noninferiority(a, b, margin: float = NONINF_MARGIN) -> dict:
     """ADAPT 非劣性：d = a − b，单侧检验 d > −margin（ttest_1samp(d + margin, 0, alternative='greater')）
     与单侧 95% 下界 mean − t_{0.95} · SD/√n。检验本身与第二轮 H2 相同；第二轮 H2 还取原始版与 masked 版中较大的 p
@@ -579,6 +631,119 @@ def last_present_time(rep: dict, j: int) -> "int | None":
     """长期池里最后一次含评估阶段 j 的行的更新时刻（已揭示行数）；从未含过返回 None。"""
     idx = np.flatnonzero(rep["comp"][j] > 0)
     return int(rep["ts"][idx[-1]]) if len(idx) else None
+
+
+# ------------------------------------------------------------------ 渐变段 (a)(b)(c) 臂差异的探索性分析（看过结果之后补的）
+
+def _n_classes(d) -> int:
+    return len(d["class_ids"]) if "class_ids" in d else int(max(d["y"].max(), d["y_hold"].max())) + 1
+
+
+def position_of(idx, d) -> np.ndarray:
+    """流内下标 → 位置编号：0 = 过渡区之前（纯 35 °C），1/2/3 = 过渡区三等分 T1/T2/T3（切法同 zone_metrics），
+    4 = 过渡区之后（纯 23 °C）。没有 zone 时抛 AssertionError。"""
+    z = _zone(d)
+    assert len(z), "没有 zone，不是渐变段"
+    a, b = int(z[0, 0]), int(z[0, 1])
+    cuts = [a + (b - a) * k // 3 for k in range(4)]
+    return np.searchsorted(cuts, np.asarray(idx), side="right")
+
+
+def position_class_counts(idx, d, n_classes: int | None = None) -> np.ndarray:
+    """流内下标 idx 的行按（位置 × 类）计数，形状 (5, n_classes)；位置见 position_of。"""
+    k = n_classes or _n_classes(d)
+    idx = np.asarray(idx, dtype=np.int64)
+    out = np.zeros((5, k), dtype=np.int64)
+    if len(idx):
+        np.add.at(out, (position_of(idx, d), d["y"][idx]), 1)
+    return out
+
+
+def holdout_ckpt_recall(d, j: int = 0) -> "tuple[np.ndarray, np.ndarray]":
+    """阶段 j 的留出集在每个检查点上的逐类召回。返回 (ts, rec)：ts = 检查点时刻（已揭示行数），
+    rec 形状 (检查点数, 类别数)，留出集里没有的类为 nan。只含该留出集全部被评估过的检查点。"""
+    k = _n_classes(d)
+    sel = d["regime_hold"] == j
+    yh = d["y_hold"][sel]
+    ts, rows = [], []
+    for c, t in enumerate(d["ckpt_t"]):
+        pr = d["ckpt_pred"][c, sel]
+        if not (pr >= 0).all():
+            continue
+        ts.append(int(t))
+        rows.append([float((pr[yh == q] == q).mean()) if (yh == q).any() else float("nan") for q in range(k)])
+    return np.asarray(ts, dtype=np.int64), np.asarray(rows, dtype=float).reshape(len(ts), k)
+
+
+def holdout_pred_share(d, j: int, true_cls: int) -> np.ndarray:
+    """阶段 j 的留出集里真类为 true_cls 的查询，在 j 结束之后各检查点上被预测成各类的比例（对检查点取平均）；
+    长度 = 类别数，和为 1。没有这样的查询或检查点时全 nan。"""
+    k = _n_classes(d)
+    sel = (d["regime_hold"] == j) & (d["y_hold"] == true_cls)
+    end = regime_end(d, j)
+    rows = []
+    if sel.any():
+        for c, t in enumerate(d["ckpt_t"]):
+            pr = d["ckpt_pred"][c, sel]
+            if t > end and (pr >= 0).all():
+                rows.append(np.bincount(pr, minlength=k)[:k] / sel.sum())
+    return np.mean(rows, axis=0) if rows else np.full(k, np.nan)
+
+
+def gap_by_checkpoint(ba_a, ba_b, ts, end: int, min_seeds: int = 9) -> dict:
+    """两个臂逐检查点的差（b − a）。ba_a / ba_b 形状 (seed 数, 检查点数)，ts 是检查点时刻。
+
+    返回 mean_diff（每个检查点对 seed 平均的差）、n_lt（b < a 的 seed 数）；n_post = 阶段结束（t > end）之后的检查点数，
+    n_neg = 其中平均差 < 0 的个数，n_consistent = 其中至少 min_seeds 个 seed 的 b < a 的个数。"""
+    a, b = np.asarray(ba_a, float), np.asarray(ba_b, float)
+    ts = np.asarray(ts)
+    diff = b - a
+    n_lt = (diff < 0).sum(axis=0)
+    post = ts > end
+    md = diff.mean(axis=0)
+    return dict(mean_diff=md, n_lt=n_lt, n_post=int(post.sum()), n_neg=int((md[post] < 0).sum()),
+                n_consistent=int((n_lt[post] >= min_seeds).sum()))
+
+
+def pool_seed_overlap(sets) -> "tuple[int, int]":
+    """若干个 seed 的流末长期池（各自是流内下标 → 原始数据行号的集合）的 (交集大小, 并集大小)。
+    用原始行号比较，因为各 seed 的留出集不同，流内下标不能直接比。"""
+    sets = [set(int(x) for x in s) for s in sets]
+    if not sets:
+        return 0, 0
+    return len(set.intersection(*sets)), len(set.union(*sets))
+
+
+def knn_class_counts(X, y, rows, ref_rows, k: int = 10, n_classes: int | None = None) -> np.ndarray:
+    """对 rows 里每一行，在 ref_rows（不含自己）里找欧氏距离最近的 k 行，统计这 k 行的类别。
+    返回形状 (len(rows), n_classes)。"""
+    X = np.asarray(X, float)
+    y = np.asarray(y)
+    rows = np.asarray(rows, dtype=np.int64)
+    ref = np.asarray(ref_rows, dtype=np.int64)
+    nc = n_classes or int(y.max()) + 1
+    out = np.zeros((len(rows), nc), dtype=np.int64)
+    for i, r in enumerate(rows):
+        dist = np.sqrt(((X[ref] - X[r]) ** 2).sum(1))
+        dist[ref == r] = np.inf
+        near = ref[np.argsort(dist, kind="stable")[:k]]
+        out[i] = np.bincount(y[near], minlength=nc)[:nc]
+    return out
+
+
+def min_dist(Q, R) -> np.ndarray:
+    """Q 的每一行到 R 的所有行的最小欧氏距离；R 为空时全为 inf。"""
+    Q, R = np.asarray(Q, float), np.asarray(R, float)
+    if len(R) == 0:
+        return np.full(len(Q), np.inf)
+    return np.sqrt(((Q[:, None, :] - R[None, :, :]) ** 2).sum(-1)).min(axis=1)
+
+
+def rank_bin_means(x, y, n_bins: int = 4) -> list:
+    """按 x 从小到大排序后分成 n_bins 个尽量等大的档，返回每档 y 的均值（x 相同的点按出现顺序，稳定排序）。"""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    order = np.argsort(x, kind="stable")
+    return [float(np.mean(y[g])) for g in np.array_split(order, n_bins)]
 
 
 def adwin_alarm_info(d, rep: dict | None = None) -> dict:

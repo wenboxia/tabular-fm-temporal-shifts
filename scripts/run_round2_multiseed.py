@@ -24,7 +24,8 @@ from scripts.run_round2 import stem as run_stem  # noqa: E402
 COST = {"sw2000": 9, "sw1500": 8, "dual1000": 7, "sw1000": 7, "arch_union": 6, "sw600": 5,
         "dual400": 4, "cbfifo400": 4, "sw400": 4, "arch_routed": 3, "arch_routed_adwin": 3,
         "sw300": 3, "sw200": 2, "sw100": 1, "dual1000_rb": 7, "dual1000_rb_adwin": 7,
-        "dual200": 2, "dual200_rb": 2, "dual200_rb_adwin": 2}
+        "dual200": 2, "dual200_rb": 2, "dual200_rb_adwin": 2,
+        "dual200_s65": 2, "dual200_s85": 2, "dual200_rb_s65": 2, "dual200_rb_s85": 2}
 
 
 def parse_seeds(s: str):

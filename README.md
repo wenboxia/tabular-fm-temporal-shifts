@@ -138,10 +138,13 @@ The sliding window, the KDD dual memory and the regime-balanced dual memory are 
 - Retention does not turn into stream accuracy. Against the sliding window of the same size, ours adapts worse on Insects and Electricity (−0.15 to −1.85 pp); against KDD it misses the −0.5 pp non-inferiority margin on Electricity (−2.10 / −0.51 pp) and on the gradual slice at 200 rows.
 - Ours uses the official regime boundaries, and retention averages over the same regimes, which favours it. Without known boundaries (ADWIN) it was tested only on the gradual slice, where it still retains more than KDD (34.89 / 43.04).
 - The Insects 1 000-row runs are the round-2 files, not a new replication.
+- An exploratory analysis of the short/long split (0.65 and 0.85 besides 0.75, 200 rows) is pre-registered as a note at the end of [the pre-registration](results/phase56_prereg.md); results will be added.
 
 The full report (in Chinese; figures in English) is **[results/phase56_round3.md](results/phase56_round3.md)**; the automatic report of every number is [results/round3_analysis.md](results/round3_analysis.md), and per-seed numbers are in [results/round3_per_seed.csv](results/round3_per_seed.csv).
 
-![Adaptation–retention per stream](results/figures_round3/fig_adapt_ret.png)
+![Paired differences of ours against KDD and the sliding window](results/figures_round3/fig_diff_forest.png)
+
+*Left: retention gain of ours over the KDD dual memory (blue) and over the same-size sliding window (grey diamonds); right: the change in adaptation, with the pre-registered −0.5 pp non-inferiority margin (dashed). 95 % intervals over 10 seeds. The per-stream view with all panels on one scale is [fig_adapt_ret.png](results/figures_round3/fig_adapt_ret.png).*
 
 | Script | Purpose |
 |---|---|

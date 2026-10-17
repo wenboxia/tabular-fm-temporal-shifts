@@ -843,3 +843,186 @@ def test_leftover_and_stream_regime_sections_on_tiny_runs():
     assert share_row.split("|")[4].strip() == f"{100 * exp:.1f}"             # 刚结束阶段的行在长期池里的占比
     stxt = _section(A.section_stream_regime, runs, seeds)
     assert "| +0.00 (0/2) |" in stxt                                          # R0 在第一次关闭阶段之前两者相同
+
+
+# ---------------------------------------------------------------- 图用的纯函数（统一刻度、森林图数据）
+
+def test_nice_ceil_and_common_span():
+    assert R3.nice_ceil(8.1) == 9 and R3.nice_ceil(9.0) == 9 and R3.nice_ceil(9.01) == 10
+    assert R3.nice_ceil(33.4) == 34 and R3.nice_ceil(34.0) == 34 and R3.nice_ceil(51) == 55
+    with pytest.raises(AssertionError):
+        R3.nice_ceil(0.0)
+    # 取最大宽度（不是平均），乘 1.2 后取整；nan 范围被忽略
+    ranges = [(74.7, 77.1), (98.5, 99.1), (np.nan, 70.0), (68.4, 76.5)]
+    assert R3.common_span(ranges) == R3.nice_ceil((76.5 - 68.4) * 1.2) == 10
+    assert R3.common_span(ranges, pad=0.0) == 9
+    with pytest.raises(AssertionError):
+        R3.common_span([(np.nan, np.nan)])
+
+
+def test_centered_limits_same_width_and_contains_data():
+    for lo, hi in [(98.5, 99.1), (68.4, 76.5), (24.8, 52.7)]:
+        a, b = R3.centered_limits(lo, hi, 34.0)
+        assert b - a == pytest.approx(34.0) and a < lo and hi < b
+        assert (a + b) / 2 == pytest.approx((lo + hi) / 2)
+    with pytest.raises(AssertionError):
+        R3.centered_limits(0.0, 5.0, 4.0)
+
+
+def test_centered_limits_cap_shifts_window_keeps_width_and_data():
+    # Gas 的数据靠近 100%：居中会超过 100，cap 之后整体下移，宽度不变，数据仍在窗口内
+    a, b = R3.centered_limits(93.8, 99.8, 10.0)
+    assert b > 100.5
+    a2, b2 = R3.centered_limits(93.8, 99.8, 10.0, cap=100.5)
+    assert b2 == pytest.approx(100.5) and b2 - a2 == pytest.approx(10.0) and a2 < 93.8 and 99.8 < b2
+    # 没超过 cap 时不动；数据本身超过 cap 时上限取数据上限（不截断数据）
+    assert R3.centered_limits(70.0, 76.0, 10.0, cap=100.5) == R3.centered_limits(70.0, 76.0, 10.0)
+    a3, b3 = R3.centered_limits(98.0, 101.0, 4.0, cap=100.5)
+    assert b3 == pytest.approx(101.0) and b3 - a3 == pytest.approx(4.0)
+
+
+def test_tick_step_values():
+    assert R3.tick_step(10) == 2 and R3.tick_step(34) == 5 and R3.tick_step(4) == 1 and R3.tick_step(100) == 20
+
+
+def test_forest_points_match_paired_in_pp_and_pick_right_columns():
+    seeds = list(range(10))
+    runs, S = _fake_S_runs(seeds)
+    pts = R3.forest_points(S, seeds, ("gas",), (200,), "RET")
+    assert [(p["vs"], p["size"], p["dataset"]) for p in pts] == [("kdd", 200, "gas"), ("sw", 200, "gas")]
+    for p, base in zip(pts, ("dual200", "sw200")):
+        a = [S[("gas", "dual200_rb", s)]["RET"] for s in seeds]
+        b = [S[("gas", base, s)]["RET"] for s in seeds]
+        pr = paired(a, b)
+        assert p["mean"] == pytest.approx(100 * pr["mean"]) and p["lo"] == pytest.approx(100 * pr["lo"])
+        assert p["hi"] == pytest.approx(100 * pr["hi"]) and p["n"] == 10 and p["lo"] < p["mean"] < p["hi"]
+    # 缺失的数据集：n = 0，均值 nan，不报错
+    miss = R3.forest_points(S, seeds, ("electricity",), (200,), "ADAPT")
+    assert all(p["n"] == 0 and np.isnan(p["mean"]) for p in miss)
+
+
+# ---------------------------------------------------------------- 渐变段 (a)(b)(c) 臂差异的探索性分析（k 段）
+
+def _hand_run():
+    """手工构造的小例子：6 类，R0 留出集 4 行（类 1 两行、类 0、类 4），3 个检查点（第 1 个在 R0 结束之前）。"""
+    y_hold = np.array([1, 1, 0, 4])
+    pred = np.array([[1, 1, 0, 4],          # t=100：R0 还没结束
+                     [3, 1, 0, 4],          # t=300
+                     [3, 3, 2, 4]])         # t=400
+    return dict(y=np.zeros(10, int), y_hold=y_hold, regime_hold=np.zeros(4, int), boundaries=np.array([200]),
+                ckpt_t=np.array([100, 300, 400]), ckpt_pred=pred, class_ids=np.array([str(i) for i in range(6)]))
+
+
+def test_position_of_and_counts():
+    d = dict(y=np.arange(10) % 3, zone=np.array([[3, 9]]), class_ids=np.array(["0", "1", "2"]))
+    # 过渡区 [3, 9) 三等分：[3,5) [5,7) [7,9)
+    assert R3.position_of(np.arange(10), d).tolist() == [0, 0, 0, 1, 1, 2, 2, 3, 3, 4]
+    c = R3.position_class_counts(np.arange(10), d)
+    assert c.shape == (5, 3) and c.sum() == 10 and c[0].tolist() == [1, 1, 1] and c[4].tolist() == [1, 0, 0]
+    assert R3.position_class_counts([], d).sum() == 0
+    with pytest.raises(AssertionError):
+        R3.position_of([1], dict(y=np.zeros(3, int)))
+
+
+def test_holdout_ckpt_recall_and_pred_share_by_hand():
+    d = _hand_run()
+    ts, rec = R3.holdout_ckpt_recall(d, 0)
+    assert ts.tolist() == [100, 300, 400] and rec.shape == (3, 6)
+    assert rec[0, 1] == 1.0 and rec[1, 1] == 0.5 and rec[2, 1] == 0.0 and rec[2, 0] == 0.0
+    assert np.isnan(rec[:, 3]).all()                                    # 留出集里没有类 3
+    # 真类 1 的预测去向：只用 R0 结束（t=200）之后的两个检查点：t=300 → 一半类 3，一半类 1；t=400 → 全类 3
+    sh = R3.holdout_pred_share(d, 0, 1)
+    assert sh[3] == pytest.approx(0.75) and sh[1] == pytest.approx(0.25) and sh.sum() == pytest.approx(1.0)
+    assert np.isnan(R3.holdout_pred_share(d, 0, 3)).all()               # 没有这样的查询
+    d2 = dict(d, ckpt_pred=np.array(d["ckpt_pred"]).copy())
+    d2["ckpt_pred"][2, 0] = -1                                           # 没评估完的检查点被跳过
+    ts2, _ = R3.holdout_ckpt_recall(d2, 0)
+    assert ts2.tolist() == [100, 300]
+    assert R3.holdout_pred_share(d2, 0, 1)[3] == pytest.approx(0.5)
+
+
+def test_gap_by_checkpoint_counts():
+    ts = np.array([100, 200, 300, 400])
+    a = np.full((10, 4), 0.5)
+    b = a.copy()
+    b[:, 2] -= 0.05                                  # t=300：所有 seed (b)<(a)
+    b[:9, 3] -= 0.05                                 # t=400：9 个 seed (b)<(a)，1 个相等
+    b[:, 0] += 0.01                                  # t=100：(b) 高
+    g = R3.gap_by_checkpoint(a, b, ts, end=200)
+    assert g["n_post"] == 2 and g["n_neg"] == 2 and g["n_consistent"] == 2
+    assert g["n_lt"].tolist() == [0, 0, 10, 9] and g["mean_diff"][0] == pytest.approx(0.01)
+    g8 = R3.gap_by_checkpoint(a, b, ts, end=200, min_seeds=10)
+    assert g8["n_consistent"] == 1
+
+
+def test_pool_seed_overlap_and_knn_and_dist_and_bins():
+    assert R3.pool_seed_overlap([[1, 2, 3], [2, 3, 4], [3, 2, 9]]) == (2, 5)
+    assert R3.pool_seed_overlap([]) == (0, 0)
+    X = np.array([[0.0], [1.0], [2.0], [10.0], [11.0]])
+    y = np.array([1, 1, 1, 3, 3])
+    nn = R3.knn_class_counts(X, y, [3], [0, 1, 2, 3, 4], k=2, n_classes=4)
+    assert nn[0].tolist() == [0, 1, 0, 1] and nn.sum() == 2                  # 最近邻不含自己：行 4（类 3）与行 2（类 1）
+    nn2 = R3.knn_class_counts(X, y, [0, 4], [0, 1, 2, 3, 4], k=1, n_classes=4)
+    assert nn2.tolist() == [[0, 1, 0, 0], [0, 0, 0, 1]]
+    Q = np.array([[0.0, 0.0], [3.0, 4.0]])
+    assert R3.min_dist(Q, np.array([[0.0, 0.0]])).tolist() == [0.0, 5.0]
+    assert np.isinf(R3.min_dist(Q, np.zeros((0, 2)))).all()
+    # 四档均值：x 从小到大，前 2 个一档……
+    assert R3.rank_bin_means([8, 1, 2, 7, 3, 4, 5, 6], [8, 1, 2, 7, 3, 4, 5, 6], 4) == [1.5, 3.5, 5.5, 7.5]
+    assert R3.rank_bin_means(np.arange(8), np.array([1, 1, 0, 0, 0, 0, 0, 0]), 4)[0] == 1.0
+
+
+def _gradual_runs(seeds=(0, 1, 2), K=4):
+    """合成的 insects_gradual 四个臂（K / A / B / C）× 200 行规模，过渡区 [600, 900)，R0 在 1000 结束。"""
+    runs = {}
+    for s in seeds:
+        for ds, m, kw in (("insects_gradual", "dual200", {}), ("insects_gradual", "dual200_rb", {}),
+                          ("insects_gradual_start", "dual200_rb", dict(mem_boundaries=(600,))),
+                          ("insects_gradual", "dual200_rb_adwin", dict(fire_at=(700,)))):
+            runs[(ds, m, s)], _ = make_run(m, dataset=ds, seed=s, K=K, boundaries=(1000,), zone=[[600, 900]], **kw)
+    return runs
+
+
+def test_section_gradual_explore_runs_and_numbers_match_helpers(monkeypatch):
+    seeds = [0, 1, 2]
+    runs = _gradual_runs(seeds)
+    monkeypatch.setattr(A, "_prepare_gradual", lambda seed: (None, "测试里不读本地特征"))
+    S = {k: run_metrics(d) for k, d in runs.items()}
+    cache, probs = {}, []
+    txt = _section(A.section_gradual_explore, runs, S, seeds, cache, probs)
+    assert probs == [] and "## k. 渐变段" in txt and "k.6" in txt and "读不到本地特征" in txt
+    # k.2 的类 1 召回 (a) 列 = 手工从 holdout_ckpt_recall 算
+    ts, _ = R3.holdout_ckpt_recall(runs[("insects_gradual", "dual200_rb", 0)], 0)
+    vals_a = []
+    for s in seeds:
+        ts_, rec = R3.holdout_ckpt_recall(runs[("insects_gradual", "dual200_rb", s)], 0)
+        vals_a.append(np.nanmean(rec[ts_ > 1000, 1]))
+    row = next(ln for ln in txt.splitlines() if ln.startswith("| 类 1 |"))
+    assert row.split("|")[3].strip() == f"{100 * np.mean(vals_a):.1f}"
+    # k.6：A 臂的交集/并集 = pool_seed_overlap
+    sets = [runs[("insects_gradual", "dual200_rb", s)]["stream_idx"][A.get_replay(cache, probs, runs, "insects_gradual", "dual200_rb", s)["final_long"]]
+            for s in seeds]
+    i_, u_ = R3.pool_seed_overlap(sets)
+    assert f"| 200 | (a) 官方变点 | 50 | 3 | {i_} | {u_} |" in txt
+
+
+def test_section_gradual_explore_features_branch(monkeypatch):
+    seeds = [0, 1]
+    runs = _gradual_runs(seeds)
+    rng = np.random.default_rng(0)
+
+    def fake_prepare(seed):
+        d = runs[("insects_gradual", "dual200_rb", seed)]
+        X = rng.normal(size=(len(d["y"]), 3)).astype(np.float32)
+        return dict(y=d["y"], hold_idx=d["hold_idx"], X=X, X_hold=X[d["hold_idx"]]), None
+    monkeypatch.setattr(A, "_prepare_gradual", fake_prepare)
+    S = {k: run_metrics(d) for k, d in runs.items()}
+    txt = _section(A.section_gradual_explore, runs, S, seeds, {}, [])
+    assert "10 个最近邻" in txt and "Spearman(gap, f3)" in txt
+    # 本地特征与 npz 标签不一致时跳过，不崩溃
+    monkeypatch.setattr(A, "_prepare_gradual", lambda seed: (dict(y=np.zeros(3, int), hold_idx=np.zeros(1, int), X=None, X_hold=None), None))
+    txt2 = _section(A.section_gradual_explore, runs, S, seeds, {}, [])
+    assert "不对应" in txt2
+    # 缺臂（没有 insects_gradual_start）：说明后跳过
+    only = {k: v for k, v in runs.items() if k[0] != "insects_gradual_start"}
+    assert "跳过" in _section(A.section_gradual_explore, only, S, seeds, {}, [])

@@ -181,3 +181,14 @@ def test_prepare_records_transition_zone():
     d = prepare(0, "insects_gradual")
     assert d["zone"].tolist() == [[9750, 12750]] and d["boundaries"] == [12750]   # 过渡区，流内坐标
     assert not ((d["hold_idx"] >= 55_158 - 45_158) & (d["hold_idx"] < 58_158 - 45_158)).any()
+
+
+
+def test_short_ratio_variants():
+    y = np.zeros(10, dtype=np.int64)
+    for m, (short, long_) in {"dual200": (150, 50), "dual200_rb": (150, 50), "dual200_s65": (130, 70),
+                              "dual200_rb_s65": (130, 70), "dual200_s85": (170, 30), "dual200_rb_s85": (170, 30)}.items():
+        mem = make_memory(m, np.zeros((10, 2)), y, 2, 0)
+        assert (mem.short_cap, mem.long_cap, mem.max_context()) == (short, long_, 200), m
+    assert type(make_memory("dual200_s65", np.zeros((10, 2)), y, 2, 0)).__name__ == "DualMemory"
+    assert type(make_memory("dual200_rb_s85", np.zeros((10, 2)), y, 2, 0)).__name__ == "RegimeBalancedDual"

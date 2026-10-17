@@ -4,7 +4,8 @@
 
 数据读取与 analyze_round3.py 相同（第二轮 insects 的 1000 行与滑窗 + 第三轮目录）；缺的方法或数据集自动跳过。
 
-1. fig_adapt_ret         每个数据集的 ADAPT–RET 散点（滑窗 / KDD / ours × 200、1000 行；误差棒 = seed SD）
+1. fig_adapt_ret         每个数据集的 ADAPT–RET 散点（滑窗 / KDD / ours × 200、1000 行；误差棒 = seed SD；四个子图刻度相同）
+   fig_diff_forest       配对差森林图（ours − KDD、ours − 同规模滑窗；左 ΔRET、右 ΔADAPT；95% t 区间）
 2. fig_regime_ret        每个数据集的各阶段 RET 柱状图
 3. fig_pool_<dataset>    seed 0 的长期池构成（KDD vs ours，各规模；只重放记忆，不跑模型）
 4. fig_transition        渐变段过渡区前后的滑动平衡准确率（三个边界臂 + 滑窗 / KDD）
@@ -20,12 +21,16 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import matplotlib  # noqa: E402
 matplotlib.use("Agg")
+import matplotlib.patheffects as pe  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.ticker import MaxNLocator  # noqa: E402
+from matplotlib.patches import Rectangle  # noqa: E402
+from scipy import stats  # noqa: E402
+from matplotlib.ticker import MaxNLocator, MultipleLocator  # noqa: E402
 
 from analyze_round3 import load_all, parse_seeds  # noqa: E402
-from src.eval.round3_analysis import (DATASET_METHODS, HOLM_DATASETS, SIZES, check_consistency,  # noqa: E402
-                                      parse_method, replay_run, rolling_ba, run_metrics)
+from src.eval.round3_analysis import (DATASET_METHODS, HOLM_DATASETS, NONINF_MARGIN, SIZES,  # noqa: E402
+                                      centered_limits, check_consistency, common_span, forest_points,
+                                      parse_method, replay_run, rolling_ba, run_metrics, tick_step)
 
 # 颜色与第二轮（scripts/plot_round2.py）一致：滑窗灰、KDD 蓝、ours 红；ADWIN 臂沿用第二轮的粉色 + 'P' 标记；
 # (b) 过渡区起点臂是第三轮新增的，另选第二轮没用过的青色 + 'D' 标记
@@ -37,6 +42,7 @@ STAGE_STYLES = [("#b2df8a", ""), ("#fdbf6f", ""), ("#cab2d6", ""), ("#ffff99", "
                 ("#e08214", "//"), ("#8c510a", ""), ("#b15928", ".."), ("#ffd92f", "..")]
 TITLE = {"insects": "Insects (abrupt)", "gas": "Gas Sensor Drift", "electricity": "Electricity (NSW)",
          "insects_gradual": "Insects (gradual slice)"}
+ACC_CAP = 100.5                                                   # 准确率坐标轴上限（略高于 100，留出标记的边）
 WRITTEN = []
 
 
@@ -77,38 +83,110 @@ def n_seeds_text(counts):
     return f"n = {counts[0]} seeds" if min(counts) == max(counts) else f"n = {min(counts)}-{max(counts)} seeds"
 
 
+def place_labels(fig, ax, labels):
+    """给每个点放规模标签（'200' / '1000'）：在点的八个方向、三种距离里挑第一个不压住任何点、误差棒、
+    已放标签、也不超出坐标轴的位置；都不行就取重叠最少的。labels 的元素 = (文字, x, y, xerr, yerr, 点大小, 颜色, 偏好)。"""
+    r = fig.canvas.get_renderer()
+    k = fig.dpi / 72.0                                            # 点 → 像素
+    tr = ax.transData
+    boxes = []                                                    # 障碍物（像素矩形 x0, y0, x1, y1）
+    for _, x, y, sx, sy, ms, _, _ in labels:
+        px, py = tr.transform((x, y))
+        h = (ms / 2 + 1) * k
+        boxes.append((px - h, py - h, px + h, py + h))
+        (x0, _), (x1, _) = tr.transform((x - sx, y)), tr.transform((x + sx, y))
+        (_, y0), (_, y1) = tr.transform((x, y - sy)), tr.transform((x, y + sy))
+        boxes.append((x0 - 2, py - 2, x1 + 2, py + 2))
+        boxes.append((px - 2, y0 - 2, px + 2, y1 + 2))
+    axbox = ax.get_window_extent(r)
+
+    def inter(a, b):
+        w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+        return w * h if w > 0 and h > 0 else 0.0
+    dirs = {"ur": (1, 1), "dr": (1, -1), "ul": (-1, 1), "dl": (-1, -1), "r": (1, 0), "l": (-1, 0), "u": (0, 1), "d": (0, -1)}
+    for text, x, y, sx, sy, ms, col, pref in labels:
+        order = ["dl", "dr", "ul", "ur", "r", "l", "d", "u"] if pref == "sw" else ["ur", "dr", "ul", "dl", "r", "l", "u", "d"]
+        px, py = tr.transform((x, y))
+        best = None
+        for mult in (1.0, 1.9, 2.8, 3.8):
+            for dname in order:
+                ux, uy = dirs[dname]
+                off = (ms / 2 + 2) * mult
+                t = ax.annotate(text, (x, y), textcoords="offset points", xytext=(ux * off, uy * off), fontsize=7,
+                                color=col, ha="left" if ux > 0 else ("right" if ux < 0 else "center"),
+                                va="bottom" if uy > 0 else ("top" if uy < 0 else "center"))
+                bb = t.get_window_extent(r)
+                bx = (bb.x0 - 1, bb.y0 - 1, bb.x1 + 1, bb.y1 + 1)
+                out = (max(0, axbox.x0 - bx[0]) + max(0, bx[2] - axbox.x1) + max(0, axbox.y0 - bx[1])
+                       + max(0, bx[3] - axbox.y1))
+                cost = sum(inter(bx, b) for b in boxes) + 1e4 * out
+                if best is None or cost < best[0]:
+                    if best is not None:
+                        best[1].remove()
+                    best = (cost, t, bx)
+                else:
+                    t.remove()
+                if cost == 0:
+                    break
+            if best[0] == 0:
+                break
+        boxes.append(best[2])
+
+
 def fig_adapt_ret(S, seeds, out):
-    fig, axes = plt.subplots(1, 4, figsize=(17, 4.2))
+    fig, axes = plt.subplots(1, 4, figsize=(17, 4.6))
     counts = []
-    # 标签偏移按角色错开：滑窗在下、KDD 居中偏上、ours 在上，避免重合的点标签叠在一起
-    offset = {"sw": (-24, -11), "kdd": (5, 4), "ours": (5, 7)}
     zorder = {"sw": 4, "kdd": 3, "ours": 5}                       # 滑窗画在 KDD 上面（两者在 Gas / Electricity 上几乎重合）
-    for ax, ds in zip(axes, HOLM_DATASETS):
+    panel_labels = []
+    panels = []                                                   # 先收集数据，再按四个子图里最大的范围统一刻度
+    for ds in HOLM_DATASETS:
         arms = [(ds, m) for m in DATASET_METHODS[ds]]
         if ds == "insects_gradual":
             arms += [("insects_gradual_start", m) for m in DATASET_METHODS["insects_gradual_start"]]
-        xs_all = []
+        pts = []
         for d_, m in arms:
-            role, size, adw = parse_method(m)
-            c, mk, _ = role_style(m)
-            if d_ == "insects_gradual_start":
-                c, mk = C_START, "D"
             ax_, sx = mean_sd(vals(S, d_, m, "ADAPT", seeds))
             ay, sy = mean_sd(vals(S, d_, m, "RET", seeds))
             if not (np.isfinite(ax_) and np.isfinite(ay)):
                 continue
             both = np.isfinite(vals(S, d_, m, "ADAPT", seeds)) & np.isfinite(vals(S, d_, m, "RET", seeds))
             counts.append(int(both.sum()))
-            xs_all.append(100 * ax_)
-            ax.errorbar(100 * ax_, 100 * ay, xerr=100 * sx, yerr=100 * sy, fmt=mk, color=c,
+            pts.append((d_, m, 100 * ax_, 100 * ay, 100 * sx, 100 * sy))
+        panels.append(pts)
+    ranges = []                                                   # 每个子图的 (x 范围, y 范围)，含 ±SD
+    for pts in panels:
+        if not pts:
+            ranges.append(None)
+            continue
+        ranges.append(((min(p[2] - p[4] for p in pts), max(p[2] + p[4] for p in pts)),
+                       (min(p[3] - p[5] for p in pts), max(p[3] + p[5] for p in pts))))
+    ok = [r for r in ranges if r is not None]
+    wx = common_span([r[0] for r in ok]) if ok else 1.0
+    wy = common_span([r[1] for r in ok]) if ok else 1.0
+    for ax, ds, pts, rg in zip(axes, HOLM_DATASETS, panels, ranges):
+        labels = []
+        for d_, m, x, y, sx, sy in pts:
+            role, size, adw = parse_method(m)
+            c, mk, _ = role_style(m)
+            if d_ == "insects_gradual_start":
+                c, mk = C_START, "D"
+            ax.errorbar(x, y, xerr=sx, yerr=sy, fmt=mk, color=c,
                         mfc=c if size == 1000 else "white", ms=13 if mk == "*" else 8, capsize=2, lw=1,
-                        zorder=zorder[role])
-            ax.annotate(str(size), (100 * ax_, 100 * ay), textcoords="offset points",
-                        xytext=offset["ours" if d_ == "insects_gradual_start" else role], fontsize=7, color=c)
-        span = f"\n(x-axis span of means: {max(xs_all) - min(xs_all):.1f} pp)" if xs_all else ""
-        ax.set_title(TITLE[ds] + span, fontsize=10)
+                        zorder=zorder[role], alpha=0.75 if role == "sw" else 1.0)   # 滑窗半透明，盖住 KDD 时仍能看到蓝边
+            labels.append((str(size), x, y, sx, sy, 13 if mk == "*" else 8, c,
+                           "sw" if role == "sw" else "other"))
+        if rg is not None:
+            ax.set_xlim(*centered_limits(*rg[0], wx, cap=ACC_CAP))        # 准确率不会超过 100：超出时整体下移，宽度不变
+            ax.set_ylim(*centered_limits(*rg[1], wy, cap=ACC_CAP))
+        ax.xaxis.set_major_locator(MultipleLocator(tick_step(wx)))
+        ax.yaxis.set_major_locator(MultipleLocator(tick_step(wy)))
+        ax.set_title(TITLE[ds], fontsize=10)
         ax.set_xlabel("ADAPT: balanced prequential accuracy (%)")
         ax.grid(alpha=0.3)
+        panel_labels.append((ax, labels))
+    fig.canvas.draw()                                             # 刻度定下来之后再放标签，才能量出像素位置
+    for ax, labels in panel_labels:
+        place_labels(fig, ax, labels)
     axes[0].set_ylabel("RET: balanced accuracy on holdout (%)")
     handles = [plt.Line2D([], [], marker="o", color=C_SW, ls="", label="Sliding window"),
                plt.Line2D([], [], marker="s", color=C_KDD, ls="", label="KDD dual memory"),
@@ -118,9 +196,80 @@ def fig_adapt_ret(S, seeds, out):
                plt.Line2D([], [], marker="P", color=C_ADWIN, ls="", label="Ours, ADWIN boundary (c)"),
                plt.Line2D([], [], marker="o", color="0.4", mfc="white", ls="", label="open = 200 rows, filled = 1000 rows")]
     fig.legend(handles=handles, loc="lower center", ncol=3, fontsize=8, bbox_to_anchor=(0.5, -0.12))
-    fig.suptitle(f"Adaptation vs retention at equal context size (mean ± SD over seeds; {n_seeds_text(counts)}; "
-                 "x-axes differ between panels)", fontsize=11, y=1.02)
+    fig.suptitle(f"Adaptation vs retention at equal context size (mean ± SD over seeds; {n_seeds_text(counts)}); "
+                 f"all panels share the same scale ({wx:g} pp × {wy:g} pp)", fontsize=11, y=1.02)
     save(fig, out, "fig_adapt_ret")
+
+
+def noninf_agreement(pts):
+    """ADAPT 面板里：双侧 95% 下界与单侧 95% 下界（= 非劣性判定用的）对"下界 > −0.5 pp"的判定是否一致。
+    返回 (一致的点数, 点数)。"""
+    same = tot = 0
+    for (metric, _, _, _), p in pts.items():
+        if metric != "ADAPT" or not np.isfinite(p["lo"]) or p["n"] < 2:
+            continue
+        se = (p["hi"] - p["mean"]) / stats.t.ppf(0.975, p["n"] - 1)
+        one = p["mean"] - stats.t.ppf(0.95, p["n"] - 1) * se
+        tot += 1
+        same += int((p["lo"] > -100 * NONINF_MARGIN) == (one > -100 * NONINF_MARGIN))
+    return same, tot
+
+
+def fig_diff_forest(S, seeds, out):
+    """配对差森林图：左 ΔRET，右 ΔADAPT；每行（数据集 × 规模）两个点，颜色表示"相对谁"。"""
+    sizes = SIZES
+    rows = [(ds, size) for ds in HOLM_DATASETS for size in sizes]
+    pts = {}
+    for metric in ("RET", "ADAPT"):
+        for p in forest_points(S, seeds, HOLM_DATASETS, sizes, metric):
+            pts[(metric, p["dataset"], p["size"], p["vs"])] = p
+    if not any(np.isfinite(p["mean"]) for p in pts.values()):
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6.4), sharey=True)
+    ypos = {r: i for i, r in enumerate(rows)}
+    dy = 0.17
+    style = {"kdd": (C_KDD, "o", -dy, "Ours − KDD dual memory"),
+             "sw": (C_SW, "D", dy, "Ours − sliding window (same size)")}
+    for ax, metric, title in zip(axes, ("RET", "ADAPT"), ("Δ RET (retention)", "Δ ADAPT (adaptation)")):
+        for (ds, size) in rows:
+            for vs, (col, mk, off, _) in style.items():
+                p = pts[(metric, ds, size, vs)]
+                if not np.isfinite(p["mean"]):
+                    continue
+                y = ypos[(ds, size)] + off
+                xerr = [[p["mean"] - p["lo"]], [p["hi"] - p["mean"]]] if np.isfinite(p["lo"]) else None
+                ax.errorbar(p["mean"], y, xerr=xerr, fmt=mk, color=col, mfc=col,        # 两个比较都实心：形状 + 颜色区分，空心/实心在这里不表示规模
+                            ms=6, capsize=2.5, lw=1.3, zorder=3)
+        ax.axvline(0, color="k", lw=1, zorder=1)
+        if metric == "ADAPT":
+            ax.axvline(-100 * NONINF_MARGIN, color="0.35", ls="--", lw=1, zorder=1)
+        for k in range(1, len(HOLM_DATASETS)):                     # 数据集之间的分隔线
+            ax.axhline(2 * k - 0.5, color="0.8", lw=0.8, zorder=0)
+        ax.set_title(title + " in percentage points", fontsize=10)
+        ax.set_xlabel("difference in pp (paired over seeds; bars = two-sided 95% t interval)")
+        ax.grid(axis="x", alpha=0.3)
+    axes[0].set_yticks(range(len(rows)))
+    axes[0].set_yticklabels([f"{TITLE[ds]}, {size} rows" for ds, size in rows], fontsize=9)
+    axes[0].set_ylim(len(rows) - 0.5, -0.5)                       # 第一行在最上面
+    handles = [plt.Line2D([], [], marker=mk, color=col, mfc=col, ls="-", ms=6, label=lab)
+               for vs, (col, mk, _, lab) in style.items()]
+    handles += [plt.Line2D([], [], color="k", lw=1, label="no difference (0)"),
+                plt.Line2D([], [], color="0.35", ls="--", lw=1,
+                           label="pre-registered non-inferiority margin (−0.5 pp, right panel)")]
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=8.5, bbox_to_anchor=(0.5, -0.07))
+    n = [p["n"] for p in pts.values() if p["n"] > 0]
+    fig.suptitle(f"Paired differences of Ours (regime-balanced) at equal context size ({n_seeds_text(n)}; "
+                 "colour = compared against; gradual slice: arm (a))\n"
+                 "note: the two panels have different x scales", fontsize=10.5, y=1.0)
+    k_same, k_all = noninf_agreement(pts)
+    agree = ("both give the same verdict at all %d points" % k_all if k_same == k_all
+             else "the two bounds give different verdicts at %d of %d points" % (k_all - k_same, k_all))
+    fig.text(0.5, -0.085, "Bars are two-sided 95% t intervals. The non-inferiority verdict uses the one-sided 95% lower bound "
+             "(report Sec. 2.3), which is slightly narrower;\n" + agree + " in the right panel. "
+             "Filled markers here only mark the comparison (colour/shape), not the context size as in the ADAPT-RET figure.",
+             ha="center", va="top", fontsize=8, color="0.3")
+    fig.tight_layout(rect=(0, 0.02, 1, 0.96))
+    save(fig, out, "fig_diff_forest")
 
 
 def fig_regime_ret(S, runs, seeds, out):
@@ -175,7 +324,7 @@ def fig_pool(runs, ds, seed, out):
             ax = axes[r, c]
             m = {"kdd": f"dual{size}", "ours": f"dual{size}_rb", "ours_adwin": f"dual{size}_rb_adwin"}[role]
             d = runs.get((ds, m, seed))
-            ax.set_title(f"{lab}, {size} rows", fontsize=9)
+            ax.set_title(f"{lab}, {size} rows", fontsize=9, pad=12 if has_zone else 6)
             if d is None:
                 ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
                 continue
@@ -194,10 +343,15 @@ def fig_pool(runs, ds, seed, out):
             for b in d["boundaries"]:
                 ax.axvline(int(b), color="k", ls="--", lw=0.6)
             for z in np.asarray(d["zone"]).reshape(-1, 2) if "zone" in d else []:
-                ax.axvspan(int(z[0]), int(z[1]), color="0.8", alpha=0.5, lw=0)
-            if role == "ours_adwin":                          # ADWIN 报警位置（新阶段第一行）
+                # 过渡区：画在坐标轴上方的灰条 + 区内两条细竖线，不盖在阶段颜色上（否则 R0 的绿色会变成灰绿）
+                ax.add_patch(Rectangle((int(z[0]), 1.0), int(z[1]) - int(z[0]), 0.045, transform=ax.get_xaxis_transform(),
+                                       facecolor="0.7", edgecolor="0.35", lw=0.6, clip_on=False))
+                for zz in (z[0], z[1]):
+                    ax.axvline(int(zz), color="0.35", lw=0.8, zorder=2)
+            if role == "ours_adwin":                          # ADWIN 报警位置（新阶段第一行）：粉线加深色描边，在绿/橙底上也看得见
                 for b in np.asarray(d["closures"]):
-                    ax.axvline(int(b), color=C_ADWIN, ls=":", lw=1.5)
+                    ax.axvline(int(b), color=C_ADWIN, ls=(0, (1.2, 1.2)), lw=2.2, zorder=4,
+                               path_effects=[pe.Stroke(linewidth=3.8, foreground="0.15"), pe.Normal()])
             ax.set_ylim(0, size // 4)
             ax.set_xlim(0, rep["ts"][-1])
             ax.xaxis.set_major_locator(MaxNLocator(5))
@@ -214,7 +368,7 @@ def fig_pool(runs, ds, seed, out):
                        bbox_to_anchor=(1.01, 0.5), ncol=1 if n_reg <= 10 else 2)
     note = "dashed = evaluation-regime ends"
     if has_zone:
-        note += ", grey = gradual transition"
+        note += ", grey bar on top = gradual transition"
     if ds == "insects_gradual":
         note += ", pink dotted = ADWIN alarms"
     fig.suptitle(f"Long-term pool composition over time, {TITLE[ds]} (example: seed {seed}; {note})", fontsize=10, y=1.0)
@@ -293,6 +447,7 @@ def main():
     S = {k: run_metrics(d) for k, d in runs.items()}
     os.makedirs(args.out, exist_ok=True)
     fig_adapt_ret(S, seeds, args.out)
+    fig_diff_forest(S, seeds, args.out)
     fig_regime_ret(S, runs, seeds, args.out)
     for ds in HOLM_DATASETS:
         fig_pool(runs, ds, args.pool_seed, args.out)

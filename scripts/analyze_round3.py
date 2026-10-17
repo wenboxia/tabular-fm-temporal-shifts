@@ -14,21 +14,28 @@
 f 阶段差异（探索性，看过 Gas 的 CPU 结果之后定义）、g 不用 TabPFN 的基线（预注册口径与按批揭示口径并列）。
 看过第三轮结果之后补的描述性小节：h 单类连续段掩码去掉的行比例、i 阶段结束后记忆里还剩什么（行数、类别覆盖、行年龄）、
 j 各阶段流上准确率差（ours − KDD）；渐变段（e 段）另含 KDD − 滑窗、(b)(c) − (a)、最终长期池构成、逐类召回。
+k 渐变段 (a)(b)(c) 臂差异的探索性分析（看过结果之后补的；200 行时 (b) 比 (a) 低、1000 行时反过来）：逐检查点的差、逐类召回差、
+类 1 查询的预测去向、流与长期池按（位置 × 类）的构成、不同 seed 的长期池重合、臂内召回与时间的相关；
+特征部分（最近邻、查询到池中类 3 / 类 1 行的距离与被判成类 3 的比例）要读本地的 Insects 特征（run_round2.prepare），读不到时跳过。
 """
 import argparse
 import os
 import sys
+import warnings
 
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from src.eval.round2_metrics import regime_end  # noqa: E402
 from src.eval.round3_analysis import (DATASET_METHODS, HOLM_DATASETS, NONINF_MARGIN,  # noqa: E402
                                       SIZES, adwin_alarm_info, age_summary, all_pairs, baselines_full,
                                       check_consistency, class_coverage, class_share,
-                                      final_pool_by_position, find_missing, first_diff_row, holdout_class_recall,
-                                      holm, last_present_time, load_runs, mask_removed_share, mean_sd_ci,
-                                      noninferiority, overlap_summary, paired, parse_method, quick_check,
+                                      final_pool_by_position, find_missing, first_diff_row, gap_by_checkpoint,
+                                      holdout_class_recall, holdout_ckpt_recall, holdout_pred_share,
+                                      holm, knn_class_counts, last_present_time, load_runs, mask_removed_share,
+                                      mean_sd_ci, min_dist, noninferiority, overlap_summary, paired, parse_method,
+                                      pool_seed_overlap, position_class_counts, quick_check, rank_bin_means,
                                       regime_leftover, replay_run, run_metrics, spearman, stream_acc_per_regime,
                                       stage_auc)
 
@@ -716,6 +723,278 @@ def section_stream_regime(P, runs, seeds):
             table(P, [f"R{j}" for j in range(n_reg)], [cells])
 
 
+def _gradual_arms(size):
+    """渐变段四个臂：K = KDD，A = (a) 官方变点，B = (b) 过渡区起点，C = (c) ADWIN。返回 {臂: (数据集, 方法)}。"""
+    return {"K": ("insects_gradual", f"dual{size}"), "A": ("insects_gradual", f"dual{size}_rb"),
+            "B": ("insects_gradual_start", f"dual{size}_rb"), "C": ("insects_gradual", f"dual{size}_rb_adwin")}
+
+
+ARM_NAME = {"K": "KDD", "A": "(a) 官方变点", "B": "(b) 过渡区起点", "C": "(c) ADWIN"}
+POS_NAME = ["纯 35°C", "T1", "T2", "T3", "纯 23°C"]
+
+
+def _lt_cell(diff, plus=True):
+    """逐 seed 的差（小数）→ 'xx.xx (差为负的 seed 数/n)'，单位 pp。"""
+    diff = np.asarray([x for x in diff if np.isfinite(x)], float)
+    if not len(diff):
+        return "—"
+    return f"{pp(diff.mean(), plus)} ({int((diff < 0).sum())}/{len(diff)})"
+
+
+def _prepare_gradual(seed):
+    """读本地特征（与 run_round2 同一套归一化）；读不到时返回 (None, 原因)。"""
+    try:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from run_round2 import prepare
+        return prepare(seed, "insects_gradual"), None
+    except Exception as e:      # noqa: BLE001
+        return None, f"{type(e).__name__}: {e}"
+
+
+def section_gradual_explore(P, runs, S, seeds, cache, probs):
+    P("## k. 渐变段 (a)(b)(c) 臂差异的探索性分析（看过结果之后补的）\n")
+    P("起因：200 行时 (b) 的 RET 比 (a) 低（见 e 段），1000 行时反过来。这一段**不是预注册分析**，是看过结果之后为了弄清\"差距在哪\"补的，"
+      "所有 p 值与\"seed 数\"都是描述性的。A = (a) 官方变点，B = (b) 过渡区起点，C = (c) ADWIN，K = KDD 双记忆。"
+      "R0 的留出集只含纯 35°C 的行，每类 50 行，没有类 3。\n")
+    P("**统计注意**：10 个 seed 不是 10 个独立的\"池\"。seed 只改变留出集的抽样（也改变 TabPFN 的随机性），而长期池里每类只有几行、"
+      "是流里连续的一小段，各 seed 之间几乎是同一批行（见 k.6）。所以\"10/10 个 seed (b) 更低\"主要是在比较两组特定的几行，"
+      "不能推出\"在过渡区起点关闭阶段一般更差\"。\n")
+    ok_seeds = {}
+    for size in SIZES:
+        arms = _gradual_arms(size)
+        ok_seeds[size] = [s_ for s_ in seeds if all((ds, m, s_) in runs for ds, m in arms.values())]
+    if not any(ok_seeds.values()):
+        P("（没有同时含 K、A、B、C 四个臂的 seed，跳过）\n")
+        return
+
+    def per_seed(size, arm, ss):
+        ds, m = _gradual_arms(size)[arm]
+        return [runs[(ds, m, s_)] for s_ in ss]
+
+    # ---- k.1 逐检查点
+    P("### k.1 R0 留出集平衡准确率逐检查点（%，seed 平均；t = 已揭示行数）\n")
+    ends, curves = {}, {}
+    for size in SIZES:
+        ss = ok_seeds[size]
+        if not ss:
+            continue
+        rec = {a: [holdout_ckpt_recall(d, 0) for d in per_seed(size, a, ss)] for a in "KABC"}
+        ts = rec["A"][0][0]
+        if not all(np.array_equal(r[0], ts) for a in "KABC" for r in rec[a]):
+            probs.append(f"k 段：{size} 行各臂/seed 的检查点时刻不一致，跳过 k.1")
+            continue
+        dA = per_seed(size, "A", ss)[0]
+        end, z0_ = regime_end(dA, 0), int(np.asarray(dA["zone"]).reshape(-1, 2)[0, 0])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            ba = {a: np.stack([np.nanmean(r[1], axis=1) for r in rec[a]]) for a in "KABC"}      # (seed, 检查点)
+        ends[size], curves[size] = end, (ts, rec, ba)
+        gb, gc = gap_by_checkpoint(ba["A"], ba["B"], ts, end), gap_by_checkpoint(ba["A"], ba["C"], ts, end)
+        P(f"**{size} 行**（R0 在 t={end} 结束；共 {len(ss)} 个 seed）：\n")
+        rows = []
+        for i, t in enumerate(ts):
+            if t < z0_:
+                continue
+            rows.append([int(t) if t != end else f"{int(t)}（R0 结束）"] + [f"{100 * ba[a][:, i].mean():.1f}" for a in "KABC"]
+                        + [f"{100 * gb['mean_diff'][i]:+.1f} ({int(gb['n_lt'][i])})", f"{100 * gc['mean_diff'][i]:+.1f} ({int(gc['n_lt'][i])})"])
+        table(P, ["t", "KDD", "(a)", "(b)", "(c)", "(b)−(a)（(b)<(a) 的 seed 数）", "(c)−(a)（(c)<(a) 的 seed 数）"], rows)
+        pre = (ts >= end - 750) & (ts <= end)
+        early = (ts >= z0_) & (ts < end - 750)
+        span = lambda m: ("（没有检查点）" if not m.any() else      # noqa: E731
+                          f"{100 * gb['mean_diff'][m].min():+.1f} 到 {100 * gb['mean_diff'][m].max():+.1f} pp")
+        P(f"- R0 结束之后（t > {end}）共 {gb['n_post']} 个检查点：(b)−(a) 的平均差 < 0 的有 {gb['n_neg']} 个，其中至少 9/10 个 seed 的 (b)<(a) 的有 "
+          f"{gb['n_consistent']} 个；(c)−(a) 的平均差 < 0 的有 {gc['n_neg']} 个，至少 9/10 个 seed 的 (c)<(a) 的有 {gc['n_consistent']} 个。")
+        P(f"- R0 结束之前最后 750 行的检查点上 (b)−(a) 的范围：{span(pre)}；过渡区开始（t ≥ {z0_}）到这之前的检查点上："
+          f"{span(early)}。\n")
+
+    # ---- k.2 逐类召回
+    P("### k.2 R0 留出集逐类召回（%，R0 结束之后各检查点平均，再对 seed 平均）与臂间的差\n")
+    P("差的单元格 = 平均差 pp（括号里是该臂低于 (a) 的 seed 数 / n）。\"各类差的平均\"是对留出集里有的类（没有类 3）取平均，应等于 RET 的差。\n")
+    for size in SIZES:
+        if size not in curves:
+            continue
+        ts, rec, ba = curves[size]
+        ss, end = ok_seeds[size], ends[size]
+        post = ts > end
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            rc = {a: np.stack([np.nanmean(r[1][post], axis=0) for r in rec[a]]) for a in "KABC"}      # (seed, 类)
+        has = [q for q in range(rc["A"].shape[1]) if np.isfinite(rc["A"][:, q]).all()]
+        rows = []
+        for q in has:
+            rows.append([f"类 {q}"] + [f"{100 * rc[a][:, q].mean():.1f}" for a in "KABC"]
+                        + [_lt_cell(rc["B"][:, q] - rc["A"][:, q]), _lt_cell(rc["C"][:, q] - rc["A"][:, q])])
+        avg = lambda a: rc[a][:, has].mean(axis=1)      # noqa: E731
+        rows.append(["各类差的平均"] + [f"{100 * avg(a).mean():.2f}" for a in "KABC"]
+                    + [_lt_cell(avg("B") - avg("A")), _lt_cell(avg("C") - avg("A"))])
+        P(f"**{size} 行**：\n")
+        table(P, ["类", "KDD", "(a)", "(b)", "(c)", "(b)−(a)", "(c)−(a)"], rows)
+        r0 = lambda a: vals(S, *_gradual_arms(size)[a], "RET_R0", ss)      # noqa: E731
+        P(f"核对：RET_R0 的差 (b)−(a) = {pp(np.nanmean(r0('B') - r0('A')), True)} pp，(c)−(a) = {pp(np.nanmean(r0('C') - r0('A')), True)} pp。"
+          f"类 1 召回逐 seed 的范围（最小–最大，%）：" + "；".join(
+              f"{ARM_NAME[a]} {100 * rc[a][:, 1].min():.0f}–{100 * rc[a][:, 1].max():.0f}" for a in "KABC") + "。\n")
+
+    # ---- k.3 类 1 查询的预测去向
+    P("### k.3 R0 留出集里真类 1 的查询被预测成什么（%，R0 结束之后各检查点平均，再对 seed 平均；真实 TabPFN 的预测）\n")
+    for size in SIZES:
+        ss = ok_seeds[size]
+        if not ss:
+            continue
+        rows = []
+        for a in "KABC":
+            sh = np.nanmean([holdout_pred_share(d, 0, 1) for d in per_seed(size, a, ss)], axis=0)
+            rows.append([ARM_NAME[a]] + [f"{100 * v:.1f}" for v in sh])
+        P(f"**{size} 行**：\n")
+        table(P, ["臂"] + [f"→ 类 {q}" for q in range(len(rows[0]) - 1)], rows)
+
+    # ---- k.4 流的构成
+    P("### k.4 流里各（位置 × 类）有多少行，与各部分类 1、类 3 的占比\n")
+    ss0 = [s_ for s_ in seeds if ("insects_gradual", "dual200_rb", s_) in runs]
+    if ss0:
+        d0 = runs[("insects_gradual", "dual200_rb", ss0[0])]
+        cnt = position_class_counts(np.arange(len(d0["y"])), d0)
+        K_ = cnt.shape[1]
+        P(f"seed {ss0[0]} 的流（去掉留出行之后）：\n")
+        table(P, ["位置"] + [f"类 {q}" for q in range(K_)] + ["合计"],
+              [[POS_NAME[i]] + [int(v) for v in cnt[i]] + [int(cnt[i].sum())] for i in range(5)])
+        rows = []
+        for name in ("整条流", "R0（纯 35°C + 过渡区）", "纯 35°C 部分", "R1（纯 23°C）"):
+            sh = []
+            for s_ in ss0:
+                d = runs[("insects_gradual", "dual200_rb", s_)]
+                y_, reg_ = d["y"], d["regime"]
+                pos_ = np.searchsorted([int(np.asarray(d["zone"]).reshape(-1, 2)[0, 0])], np.arange(len(y_)), side="right")
+                m = {"整条流": np.ones(len(y_), bool), "R0（纯 35°C + 过渡区）": reg_ == 0, "纯 35°C 部分": pos_ == 0,
+                     "R1（纯 23°C）": reg_ == 1}[name]
+                sh.append(np.bincount(y_[m], minlength=K_) / m.sum())
+            sh = 100 * np.mean(sh, axis=0)
+            rows.append([name] + [f"{v:.1f}" for v in sh])
+        P("各部分各类所占比例（%，对 seed 平均）：\n")
+        table(P, ["部分"] + [f"类 {q}" for q in range(K_)], rows)
+        hc = np.array([np.bincount(runs[("insects_gradual", "dual200_rb", s_)]["y_hold"][
+            runs[("insects_gradual", "dual200_rb", s_)]["regime_hold"] == 0], minlength=K_) for s_ in ss0])
+        P("R0 留出集各类的行数（各 seed 的范围）：" + "，".join(f"类 {q}: {lohi(hc[:, q], 0)}" for q in range(K_)) + "。\n")
+
+    # ---- k.5 流末长期池构成
+    P("### k.5 流末长期池按（位置 × 类）的行数（seed 平均；全 0 的位置不写）\n")
+    P("位置：纯 35°C = 过渡区之前，T1–T3 = 过渡区三等分，纯 23°C = 过渡区之后。表中每行是一个位置，每列是一个类。\n")
+    for size in SIZES:
+        ss = ok_seeds[size]
+        if not ss:
+            continue
+        for a in "KABC":
+            ds, m = _gradual_arms(size)[a]
+            mats = []
+            for s_ in ss:
+                rep = get_replay(cache, probs, runs, ds, m, s_)
+                if rep:
+                    mats.append(position_class_counts(rep["final_long"], runs[(ds, m, s_)]))
+            if not mats:
+                continue
+            M = np.mean(mats, axis=0)
+            rows = [[POS_NAME[i]] + [f"{v:.1f}" for v in M[i]] + [f"{M[i].sum():.1f}"] for i in range(5) if M[i].sum() > 0.05]
+            P(f"**{size} 行，{ARM_NAME[a]}**（{len(mats)} 个 seed，池共 {M.sum():.0f} 行）：\n")
+            table(P, ["位置"] + [f"类 {q}" for q in range(M.shape[1])] + ["合计"], rows)
+
+    # ---- k.6 seed 间池的重合
+    P("### k.6 不同 seed 的流末长期池是否是同一批行\n")
+    P("用原始数据行号比较（各 seed 的流内下标因留出集不同而不同）。交集 = 所有 seed 的池里都有的行，并集 = 任何一个 seed 的池里有的行；"
+      "交集/并集越接近 1，各 seed 的池越接近同一批行。\n")
+    rows = []
+    for size in SIZES:
+        ss = ok_seeds[size]
+        for a in "ABC":
+            ds, m = _gradual_arms(size)[a]
+            sets = []
+            for s_ in ss:
+                rep = get_replay(cache, probs, runs, ds, m, s_)
+                if rep:
+                    sets.append(runs[(ds, m, s_)]["stream_idx"][rep["final_long"]])
+            if sets:
+                i_, u_ = pool_seed_overlap(sets)
+                rows.append([size, ARM_NAME[a], len(sets[0]), len(sets), i_, u_, f"{i_ / u_:.2f}"])
+    table(P, ["规模", "臂", "池大小", "seed 数", "交集", "并集", "交集/并集"], rows)
+
+    # ---- k.7 臂内召回与时间
+    P("### k.7 臂内：R0 类 1 召回与时间（行龄）的相关\n")
+    P("把 seed × R0 结束之后的检查点合在一起，算类 1 召回与检查点时刻 t 的 Spearman（点不独立，p 仅供参考）。"
+      "长期池里的行越到后面越老，所以这是对\"行龄效应\"的一个粗检验；但行龄与行的来源（位置）在臂间完全共线，数据无法把两者分开。\n")
+    rows = []
+    for size in SIZES:
+        if size not in curves:
+            continue
+        ts, rec, _ = curves[size]
+        post = ts > ends[size]
+        for a in "KABC":
+            x = np.tile(ts[post], len(rec[a]))
+            yv = np.concatenate([r[1][post, 1] for r in rec[a]])
+            rho, p_, n_ = spearman(x, yv)
+            rows.append([size, ARM_NAME[a], n_, "nan" if not np.isfinite(rho) else f"{rho:+.2f}",
+                         "nan" if not np.isfinite(p_) else f"{p_:.2g}"])
+    table(P, ["规模", "臂", "n", "rho", "p"], rows)
+
+    # ---- k.8 特征相关的检查
+    P("### k.8 用特征看：纯 35°C 里的类 3 行落在哪，以及类 1 查询离它们多近\n")
+    size = 200
+    if not ok_seeds[size]:
+        return
+    f0, why = _prepare_gradual(ok_seeds[size][0])
+    if f0 is None:
+        P(f"（读不到本地特征：{why}；跳过 k.8）\n")
+        return
+    d0 = runs[("insects_gradual", "dual200_rb", ok_seeds[size][0])]
+    if not (np.array_equal(f0["y"], d0["y"]) and np.array_equal(f0["hold_idx"], d0["hold_idx"])):
+        P("（本地特征与 npz 的标签不对应；跳过 k.8）\n")
+        return
+    X, y_ = f0["X"], f0["y"]
+    z0, z1 = (int(v) for v in np.asarray(d0["zone"]).reshape(-1, 2)[0])
+    pure = np.arange(z0)
+    c3 = pure[y_[pure] == 3]
+    nn = knn_class_counts(X, y_, c3, pure, k=10, n_classes=int(y_.max()) + 1)
+    P(f"**纯 35°C 里的类 3 行**（seed {ok_seeds[size][0]}，共 {len(c3)} 行，约占纯 35°C 的 {100 * len(c3) / z0:.2f}%）。"
+      "每一行在纯 35°C 的行里（不含自己）的 10 个最近邻（特征标准化后的欧氏距离）的类别个数：\n")
+    table(P, ["流内行号"] + [f"类 {q}" for q in range(nn.shape[1])], [[int(r)] + [int(v) for v in row] for r, row in zip(c3, nn)])
+    P(f"这 {len(c3)} 行里，10 个最近邻中类 1 至少 9 个的有 {int((nn[:, 1] >= 9).sum())} 行。\n")
+
+    # 剂量：(a)(b) 臂内，按查询到池中类 3 / 类 1 行的距离差
+    P("**(a)(b) 臂内按查询的检验**：对每个 R0 留出集里的类 1 查询（每 seed 50 个），取流末长期池里 R0 的行（评估阶段 0），"
+      "算它到最近的类 3 行的距离 d3 与到最近的类 1 行的距离 d1，gap = d3 − d1（越小 = 离类 3 行相对越近）；"
+      "f3 = R0 结束之后各检查点上这个查询被预测成类 3 的比例。把所有 seed 的查询合在一起，按 gap 从小到大分四档（每档等大）。"
+      "这是臂内的相关，不是因果；没有做\"替换池里的类 3 行再预测\"的对照（那需要重新运行 TabPFN）。\n")
+    res, feat_cache = {}, {}
+    for a in "AB":
+        ds, m = _gradual_arms(size)[a]
+        rows_ = []
+        for s_ in ok_seeds[size]:
+            if s_ not in feat_cache:
+                feat_cache[s_] = _prepare_gradual(s_)[0]
+            f_ = feat_cache[s_]
+            d = runs[(ds, m, s_)]
+            rep = get_replay(cache, probs, runs, ds, m, s_)
+            if f_ is None or not rep or not np.array_equal(f_["y"], d["y"]):
+                continue
+            L = rep["final_long"][d["regime"][rep["final_long"]] == 0]
+            l1, l3 = L[d["y"][L] == 1], L[d["y"][L] == 3]
+            if not len(l1) or not len(l3):
+                continue
+            sel = np.flatnonzero((d["regime_hold"] == 0) & (d["y_hold"] == 1))
+            post = np.flatnonzero((d["ckpt_t"] > regime_end(d, 0)) & (d["ckpt_pred"][:, sel] >= 0).all(axis=1))
+            f3 = (d["ckpt_pred"][np.ix_(post, sel)] == 3).mean(axis=0)
+            Q = f_["X_hold"][sel]
+            rows_.append(np.c_[min_dist(Q, f_["X"][l3]) - min_dist(Q, f_["X"][l1]), f3])
+        res[a] = np.vstack(rows_) if rows_ else np.zeros((0, 2))
+    out = []
+    for a in "AB":
+        v = res[a]
+        if len(v) < 8:
+            continue
+        rho, p_, n_ = spearman(v[:, 0], v[:, 1])
+        bins = rank_bin_means(v[:, 0], v[:, 1], 4)
+        out.append([ARM_NAME[a], n_, f"{100 * v[:, 1].mean():.1f}", f"{rho:+.2f}", f"{p_:.2g}"] + [f"{b:.2f}" for b in bins])
+    if out:
+        table(P, ["臂", "查询数", "f3 均值 (%)", "Spearman(gap, f3)", "p", "gap 最小一档的 f3", "第二档", "第三档", "gap 最大一档的 f3"], out)
+
+
 def write_csv(path, runs, S):
     n_reg = max([len(d["boundaries"]) for d in runs.values()] + [1])
     keys = (["ADAPT", "ADAPT_masked", "RET", "FGT"] + [f"RET_R{j}" for j in range(n_reg)]
@@ -799,6 +1078,7 @@ def main():
     section_leftover(Pb, runs, seeds_replay, cache, probs)
     section_replay_summary(Pb, runs, cache)
     section_stream_regime(Pb, runs, seeds)
+    section_gradual_explore(Pb, runs, S, seeds, cache, probs)
     P("### 一致性与校验问题\n")
     if not probs:
         P("无（y / hold_idx / stream_idx / boundaries 在同一 (数据集, seed) 内相同；leak_count = 0；上下文不超预算；"
