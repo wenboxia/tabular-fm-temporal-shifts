@@ -138,7 +138,7 @@ The sliding window, the KDD dual memory and the regime-balanced dual memory are 
 - Retention does not turn into stream accuracy. Against the sliding window of the same size, ours adapts worse on Insects and Electricity (−0.15 to −1.85 pp); against KDD it misses the −0.5 pp non-inferiority margin on Electricity (−2.10 / −0.51 pp) and on the gradual slice at 200 rows.
 - Ours uses the official regime boundaries, and retention averages over the same regimes, which favours it. Without known boundaries (ADWIN) it was tested only on the gradual slice, where it still retains more than KDD (34.89 / 43.04).
 - The Insects 1 000-row runs are the round-2 files, not a new replication.
-- An exploratory analysis of the short/long split (0.65 and 0.85 besides 0.75, 200 rows) is pre-registered as a note at the end of [the pre-registration](results/phase56_prereg.md); results will be added.
+- **Short/long split (exploratory, 200 rows).** The 75 / 25 split was taken from the KDD paper's grid. Repeating the comparison with short-term shares 0.65 and 0.85 (the paper's other two values) keeps the retention gain over the KDD dual memory positive on all four streams at every share, in 10/10 seeds. A smaller long-term pool (0.85) makes the gain smaller (e.g. Gas +14.14 pp instead of +18.00) and, on Electricity, also the adaptation cost (−1.32 pp instead of −2.10), which still stays beyond the −0.5 pp margin; on the gradual slice the cost is largest at 0.85 (−0.67 pp). Report: [results/phase56_round4.md](results/phase56_round4.md) (pre-registered as a note at the end of [the pre-registration](results/phase56_prereg.md), chosen after the round-3 results).
 
 The full report (in Chinese; figures in English) is **[results/phase56_round3.md](results/phase56_round3.md)**; the automatic report of every number is [results/round3_analysis.md](results/round3_analysis.md), and per-seed numbers are in [results/round3_per_seed.csv](results/round3_per_seed.csv).
 
@@ -151,6 +151,7 @@ The full report (in Chinese; figures in English) is **[results/phase56_round3.md
 | `scripts/reproduce_round3.sh` | all round-3 runs |
 | `scripts/analyze_round3.py` | tables, pre-registered tests and descriptive checks (`--quick` for a first look at seed 0) |
 | `scripts/plot_round3.py` | the round-3 figures |
+| `scripts/reproduce_round4.sh`, `scripts/analyze_round4.py`, `scripts/plot_round4.py` | the exploratory short/long split analysis |
 
 ## Related work
 
@@ -293,6 +294,8 @@ Code released under the [MIT License](LICENSE). The Insects data and the TabPFN 
 - 本文方法用官方阶段边界，而 RET 正是按这些阶段平均，对它有利；不知道边界（ADWIN）的情况只在渐变段测过，仍比 KDD 保留更多（34.89 / 43.04）。
 
 完整报告见 **[results/phase56_round3.md](results/phase56_round3.md)**，自动报告见 [results/round3_analysis.md](results/round3_analysis.md)，逐 seed 数字见 [results/round3_per_seed.csv](results/round3_per_seed.csv)。
+
+**短期/长期比例（探索性，200 行）。** 75/25 的划分来自 KDD 论文的调参网格。把短期占比换成 0.65 和 0.85（论文网格的另外两个值）重做比较：四个数据流、三个占比下，本文方法的保留都高于 KDD，均为 10/10 个 seed。长期部分越小（0.85），保留优势越小（如 Gas 从 +18.00 降到 +14.14 pp）；Electricity 的适应代价也随之变小（−2.10 → −1.32 pp），但仍超过 −0.5 pp 的边界；渐变段在 0.85 时代价最大（−0.67 pp）。报告见 [results/phase56_round4.md](results/phase56_round4.md)（作为预注册末尾的补充说明登记，看过第三轮结果之后才决定做）。
 
 **相关工作**：KDD 2026 的双记忆（本文的主要基线）和 CURE（Lee 等，2026；面向多种表格基础模型，按熵筛选写入、按冗余淘汰）都只用数据流上的准确率评估；Lourenço 等（2025）主张用上下文表格模型连接流学习与持续学习。本文在适应之外，直接测量了对早先阶段留出数据的保留。
 

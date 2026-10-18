@@ -12,6 +12,7 @@ venv/
 *.pdf
 results/round2/
 results/round3/
+results/round4/
 results/*.json
 results/multiseed_*
 results/baseline_*
