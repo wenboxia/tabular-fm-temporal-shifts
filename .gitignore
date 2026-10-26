@@ -10,6 +10,7 @@ venv/
 *.npz
 *.partial.md
 *.pdf
+!thesis/Wenbo_Xia_MSc_Thesis_Draft.pdf
 results/round2/
 results/round3/
 results/round4/
