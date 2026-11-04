@@ -73,6 +73,18 @@ def prepare(seed: int, dataset: str = "insects"):
     )
 
 
+def uses_regime_id(method: str) -> bool:
+    """*_rid：消融——类均衡双记忆，但每行特征末尾多一列官方阶段编号（预注册修订 4）。"""
+    return method.endswith("_rid")
+
+
+def add_regime_id_feature(d: dict) -> dict:
+    """给流行和留出行的特征末尾各加一列官方阶段编号（float32，不归一化）；原地修改并返回 d。"""
+    d["X"] = np.concatenate([d["X"], np.asarray(d["regime"], dtype=np.float32)[:, None]], axis=1)
+    d["X_hold"] = np.concatenate([d["X_hold"], np.asarray(d["regime_hold"], dtype=np.float32)[:, None]], axis=1)
+    return d
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--method", required=True, choices=sorted(METHODS))
@@ -91,6 +103,11 @@ def main():
     device = resolve_device(args.device)
     print(f"[device] {describe(device)}", flush=True)
     d = prepare(args.seed, args.dataset)
+    if uses_regime_id(args.method):
+        n_feat = d["X"].shape[1]
+        add_regime_id_feature(d)
+        print(f"[rid] 特征 {n_feat} -> {d['X'].shape[1]} 列：末尾加官方阶段编号（流行 regime，留出行 regime_hold）",
+              flush=True)
     memory = make_memory(args.method, d["X"], d["y"], d["n_classes"], args.seed)
     prior = SlowPrior(device=device, n_estimators=args.n_estimators, random_state=args.seed)
     predict_fn = lambda Xc, yc, Xq: prior.predict_proba_global(Xc, yc, Xq, d["n_classes"])  # noqa: E731

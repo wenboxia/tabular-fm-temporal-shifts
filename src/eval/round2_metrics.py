@@ -4,6 +4,7 @@ ADAPT  数据流上所有已预测行的平衡准确率（masked 版本剔除单
 RET    每个已结束阶段 j 的留出集平衡准确率，在 j 结束之后的所有检查点上取平均，再对 j 取平均
 POST_d 变点 d 之后前 500 行的平衡准确率
 FGT_j  留出集 j 的最佳准确率 − 最终准确率
+RET_segL（第五轮，与阶段无关）把流按固定 L 行分段，段内留出行在该段结束 lag 行之后的检查点上的平均准确率，再对段等权平均
 """
 from __future__ import annotations
 
@@ -81,6 +82,44 @@ def ret_per_regime(d) -> "dict[int, float]":
 
 def ret(d) -> float:
     r = ret_per_regime(d)
+    return float(np.mean(list(r.values()))) if r else float("nan")
+
+
+def holdout_positions(d) -> np.ndarray:
+    """每个留出行在流坐标里的位置：它前面有多少个流行（stream_idx 与 hold_idx 都是原数据集里的下标，stream_idx 升序）。"""
+    return np.searchsorted(np.asarray(d["stream_idx"]), np.asarray(d["hold_idx"]))
+
+
+def ret_segments_per_segment(d, L: int = 2000, lag: int = 0) -> "dict[int, float]":
+    """固定分段的保留（与阶段边界无关）。段 s = 流坐标 [L·s, L·(s+1))，只取完整段（L·(s+1) ≤ 流长）；
+    段内留出行 = 位置落在该段里的留出行（没有留出行的段跳过）。
+    在所有 ckpt_t > L·(s+1) + lag、且这些行都已预测（ckpt_pred ≥ 0）的检查点上算平衡准确率，取平均。
+    返回 {s: 值}，只含有这样的检查点的段。"""
+    assert L > 0 and lag >= 0
+    pos = holdout_positions(d)
+    n = len(d["y"])
+    ts = np.asarray(d["ckpt_t"])
+    out = {}
+    for s in range(n // L):
+        a, b = L * s, L * (s + 1)
+        sel = (pos >= a) & (pos < b)
+        if not sel.any():
+            continue
+        accs = []
+        for c, t in enumerate(ts):
+            if t <= b + lag:
+                continue
+            row = d["ckpt_pred"][c, sel]
+            if (row >= 0).all():
+                accs.append(balanced_accuracy(d["y_hold"][sel], row))
+        if accs:
+            out[s] = float(np.mean(accs))
+    return out
+
+
+def ret_segments(d, L: int = 2000, lag: int = 0) -> float:
+    """ret_segments_per_segment 对段等权平均；没有可用段时为 nan。"""
+    r = ret_segments_per_segment(d, L, lag)
     return float(np.mean(list(r.values()))) if r else float("nan")
 
 

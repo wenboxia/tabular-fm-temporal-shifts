@@ -25,7 +25,10 @@ COST = {"sw2000": 9, "sw1500": 8, "dual1000": 7, "sw1000": 7, "arch_union": 6, "
         "dual400": 4, "cbfifo400": 4, "sw400": 4, "arch_routed": 3, "arch_routed_adwin": 3,
         "sw300": 3, "sw200": 2, "sw100": 1, "dual1000_rb": 7, "dual1000_rb_adwin": 7,
         "dual200": 2, "dual200_rb": 2, "dual200_rb_adwin": 2,
-        "dual200_s65": 2, "dual200_s85": 2, "dual200_rb_s65": 2, "dual200_rb_s85": 2}
+        "dual200_s65": 2, "dual200_s85": 2, "dual200_rb_s65": 2, "dual200_rb_s85": 2,
+        # Round 5：与同规模的 dual / dual_rb 实测时长相同（实测：dual200 约 5-13 分钟、dual1000 约 13-31 分钟，随数据流而异）
+        "dual200_cbrs": 2, "dual1000_cbrs": 7, "dual200_rid": 2, "dual1000_rid": 7,
+        "dual200_rbr": 2, "dual1000_rbr": 7}
 
 
 def parse_seeds(s: str):
