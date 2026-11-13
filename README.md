@@ -4,7 +4,7 @@
 
 Master's thesis project, KTH Royal Institute of Technology · Wenbo Xia · [中文版](#中文版)
 
-**Thesis draft (26 October 2026):** [Wenbo_Xia_MSc_Thesis_Draft.pdf](thesis/Wenbo_Xia_MSc_Thesis_Draft.pdf). This draft predates rounds 5 and 6 below; a revised draft that includes them follows.
+**Thesis draft (13 November 2026):** [Wenbo_Xia_MSc_Thesis_Draft.pdf](thesis/Wenbo_Xia_MSc_Thesis_Draft.pdf). It includes rounds 5 and 6 below.
 
 ---
 
@@ -306,7 +306,7 @@ Code released under the [MIT License](LICENSE). The Insects data and the TabPFN 
 
 *冻结的 TabPFN 在概念漂移数据流上的上下文记忆研究* · KTH 皇家理工学院硕士论文项目 · Wenbo Xia
 
-**论文初稿（2026 年 10 月 26 日）：** [Wenbo_Xia_MSc_Thesis_Draft.pdf](thesis/Wenbo_Xia_MSc_Thesis_Draft.pdf)。这份初稿早于下面的第五、六轮；包含这两轮的修订稿随后发布。
+**论文稿（2026 年 11 月 13 日）：** [Wenbo_Xia_MSc_Thesis_Draft.pdf](thesis/Wenbo_Xia_MSc_Thesis_Draft.pdf)。这一稿包含下面的第五、六轮。
 
 #### 概要
 
